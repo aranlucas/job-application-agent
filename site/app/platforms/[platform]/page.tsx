@@ -18,13 +18,18 @@ export default async function PlatformGuide({ params }: Props) {
   const platform = findPlatform((await params).platform);
   if (!platform) notFound();
   const prompt = `${platform.starter}\n\n${catalog.instructions}`;
+  const templateUrl = "templateUrl" in platform ? platform.templateUrl : undefined;
   return <main className={`legal page-width ${styles.guide}`}>
     <Link className="legal-back" href="/platforms">← All agent setup guides</Link>
     <p className="eyebrow">{platform.name}</p>
+    <p className={styles.status}>{platform.status}</p>
     <h1>A calmer job search, in {platform.name}.</h1>
-    <p>{platform.description}</p><p className={styles.status}>{platform.status}</p>
-    {"templateUrl" in platform && platform.templateUrl ? (
-      <p><a href={platform.templateUrl}>Open the {platform.name} template</a> — starts in review mode, where every submit is confirmed.</p>
+    <p>{platform.description}</p>
+    {templateUrl ? (
+      <div className={styles.templateCta}>
+        <a className="button" href={templateUrl}>Open the {platform.name} template</a>
+        <p className={styles.templateNote}>Starts in review mode, where every submit is confirmed.</p>
+      </div>
     ) : null}
     <p>This is a setup template for your own account. Full application support depends on the browser and secure storage available on your agent’s computer.</p>
     {platform.steps.map((step, i) => <section key={step.title}>
