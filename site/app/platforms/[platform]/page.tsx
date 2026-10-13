@@ -23,6 +23,9 @@ export default async function PlatformGuide({ params }: Props) {
     <p className="eyebrow">{platform.name}</p>
     <h1>A calmer job search, in {platform.name}.</h1>
     <p>{platform.description}</p><p className={styles.status}>{platform.status}</p>
+    {"templateUrl" in platform && platform.templateUrl ? (
+      <p><a href={platform.templateUrl}>Open the {platform.name} template</a> — starts in review mode, where every submit is confirmed.</p>
+    ) : null}
     <p>This is a setup template for your own account. Full application support depends on the browser and secure storage available on your agent’s computer.</p>
     {platform.steps.map((step, i) => <section key={step.title}>
       <h2>{i + 1}. {step.title}</h2><p>{step.text}</p>
