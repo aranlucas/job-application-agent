@@ -481,27 +481,24 @@ test('event endpoint rejects identity fields, malformed payloads, and rate limit
   assert.equal(limited.status, 429);
 });
 
-test('identity envelopes are accepted for compatibility but never forwarded as candidateName/email', async () => {
+test('identity envelopes are rejected and never forwarded as candidateName/email', async () => {
   const bindings = env();
   const stored = [];
   bindings.PUBLIC_STATS_DB = { prepare: (sql) => ({ bind: (...args) => ({ run: async () => { stored.push({ sql, args }); } }) }) };
   const installationId = '11111111-1111-4111-8111-111111111111';
   const token = await createToken(installationId, bindings.SIGNING_SECRET);
-  const payload = { schemaVersion: 1, skillVersion: '3.7.3', installationId, token, event: 'installation_started', properties: { osFamily: 'macos', nodeMajor: 24, submissionMode: 'unconfigured' }, identity: { name: 'Test Candidate', email: 'candidate@example.com' } };
+  const base = { schemaVersion: 1, skillVersion: '3.7.4', installationId, token, event: 'installation_started', properties: { osFamily: 'macos', nodeMajor: 24, submissionMode: 'unconfigured' } };
   const send = (body) => worker.fetch(new Request('https://relay.example.com/v1/events', { method: 'POST', body: JSON.stringify(body) }), bindings);
-  assert.equal((await send(payload)).status, 202);
+  assert.equal((await send({ ...base, identity: { name: 'Test Candidate', email: 'candidate@example.com' } })).status, 400);
+  assert.equal(bindings.captured.length, 0);
+  assert.equal(stored.length, 0);
+  assert.equal((await send(base)).status, 202);
   assert.equal(bindings.captured[0].body.distinct_id, installationId);
   assert.equal(bindings.captured[0].body.properties.candidateName, undefined);
   assert.equal(bindings.captured[0].body.properties.candidateEmail, undefined);
   assert.equal(bindings.captured[0].body.properties.$process_person_profile, false);
   assert.equal(JSON.stringify(bindings.captured).includes('Test Candidate'), false);
   assert.equal(JSON.stringify(bindings.captured).includes('candidate@example.com'), false);
-  assert.ok(stored.length > 0);
-  assert.equal(JSON.stringify(stored).includes('Test Candidate'), false);
-  assert.equal(JSON.stringify(stored).includes('candidate@example.com'), false);
-  assert.equal((await send({ ...payload, identity: { ...payload.identity, phone: 'private' } })).status, 400);
-  assert.equal((await send({ ...payload, identity: { email: 'invalid' } })).status, 400);
-  assert.equal(bindings.captured.length, 1);
 });
 
 test('PostHog failures return a retryable relay error without leaking details', async () => {
@@ -534,7 +531,7 @@ test('contact endpoint upserts privately and is not publicly readable', async ()
     token,
     candidateName: 'Test Candidate',
     candidateEmail: 'candidate@example.com',
-    skillVersion: '3.7.3',
+    skillVersion: '3.7.4',
     updatedAt: '2026-10-13T12:00:00.000Z',
   };
   const created = await worker.fetch(new Request('https://relay.example.com/v1/contact', { method: 'POST', body: JSON.stringify(payload) }), bindings);
@@ -543,7 +540,7 @@ test('contact endpoint upserts privately and is not publicly readable', async ()
     installId: installationId,
     candidateName: 'Test Candidate',
     candidateEmail: 'candidate@example.com',
-    skillVersion: '3.7.3',
+    skillVersion: '3.7.4',
     updatedAt: '2026-10-13T12:00:00.000Z',
     createdAt: '2026-10-13T12:00:00.000Z',
   });

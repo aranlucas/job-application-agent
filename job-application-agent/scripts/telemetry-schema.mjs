@@ -208,8 +208,8 @@ export function createTelemetryEnvelope({ installationId, token, event, properti
   if (!UUID.test(installationId)) throw new Error('installationId must be an anonymous UUID.');
   if (typeof token !== 'string' || token.length < 8 || token.length > 2048) throw new Error('token is invalid.');
   if (typeof skillVersion !== 'string' || !VERSION.test(skillVersion)) throw new Error('skillVersion is invalid.');
-  // Accept and discard identity for compatibility with older clients; never include it.
-  if (identity !== undefined) validateTelemetryIdentity(identity);
+  // Identity envelopes are rejected; analytics never carry candidate name/email.
+  if (identity !== undefined) throw new Error('Unknown telemetry envelope property: identity.');
   const safe = validateEvent(typeof event === 'string' ? { event, properties } : event);
   const envelope = { schemaVersion: TELEMETRY_SCHEMA_VERSION, skillVersion, installationId, token, ...safe };
   if (new TextEncoder().encode(JSON.stringify(envelope)).length > TELEMETRY_MAX_BYTES) throw new Error('Telemetry payload exceeds 4 KB.');
@@ -218,7 +218,7 @@ export function createTelemetryEnvelope({ installationId, token, event, properti
 
 export function validateTelemetryEnvelope(input) {
   if (!input || Array.isArray(input) || typeof input !== 'object') throw new Error('Telemetry payload must be an object.');
-  const allowed = new Set(['schemaVersion', 'skillVersion', 'installationId', 'token', 'event', 'properties', 'identity']);
+  const allowed = new Set(['schemaVersion', 'skillVersion', 'installationId', 'token', 'event', 'properties']);
   for (const key of Object.keys(input)) if (!allowed.has(key)) throw new Error(`Unknown telemetry envelope property: ${key}.`);
   if (input.schemaVersion !== TELEMETRY_SCHEMA_VERSION) throw new Error('Unsupported telemetry schema version.');
   return createTelemetryEnvelope(input);

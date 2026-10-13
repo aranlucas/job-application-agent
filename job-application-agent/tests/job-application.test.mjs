@@ -7,7 +7,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:http';
 
-import { buildReview, commandCategory, durationBucket, migrateProfile, profileStatus, scoreJob, telemetryErrorCode, telemetryJobAssessed, validateLedgerCheckCandidate, validateLedgerEntry, validateProfile, validateSubmissionTelemetry } from '../scripts/job-application.mjs';
+import { buildReview, commandCategory, durationBucket, migrateProfile, profileStatus, scoreJob, telemetryApplicationPaused, telemetryApplicationSkipped, telemetryApplicationStarted, telemetryErrorCode, telemetryJobAssessed, validateLedgerCheckCandidate, validateLedgerEntry, validateProfile, validateSubmissionTelemetry } from '../scripts/job-application.mjs';
 
 const target = {
   name: 'Test Candidate',
@@ -725,6 +725,103 @@ test('CLI emits bounded source coverage without private evidence or attribution'
   assert.equal(JSON.stringify(captured).includes('Private lead assessment'), false);
   assert.equal(JSON.stringify(captured).includes(roundId), false);
   assert.equal(JSON.stringify(captured).includes(sourceId), false);
+});
+
+test('builds started, paused, and skipped application telemetry without PII', async () => {
+  const job = { ...matchingJob, url: 'https://jobs.example.com/roles/42?utm=1', eligibility: 'eligible', applicationChannel: 'greenhouse' };
+  const started = await telemetryApplicationStarted(job, {
+    approvalMode: 'routine-auto',
+    requiredFieldCount: 9,
+    resumeRequired: true,
+    coverLetterRequired: false,
+    referralPresent: false,
+  });
+  assert.equal(started.event, 'application_started');
+  assert.equal(started.properties.ats, 'greenhouse');
+  assert.equal(started.properties.approvalMode, 'routine-auto');
+  assert.equal(started.properties.requiredFieldCount, 9);
+  assert.equal(started.properties.jobHash.length, 64);
+  assert.equal(JSON.stringify(started).includes('utm=1'), false);
+
+  const skipped = await telemetryApplicationSkipped(job, scoreJob({ ...job, postingStatus: 'closed' }, target));
+  assert.equal(skipped.event, 'application_skipped');
+  assert.equal(skipped.properties.reason, 'closed');
+
+  const paused = await telemetryApplicationPaused({
+    url: job.url,
+    stage: 'answers',
+    blocker: 'legal-attestation',
+    applicationChannel: 'workday',
+  });
+  assert.equal(paused.event, 'application_paused');
+  assert.equal(paused.properties.stage, 'questions');
+  assert.equal(paused.properties.reason, 'legal');
+  assert.equal(paused.properties.ats, 'workday');
+});
+
+test('score review emits application_started and attention add emits application_paused', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'job-agent-lifecycle-telemetry-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const captured = [];
+  const server = createServer(async (request, response) => {
+    let raw = '';
+    for await (const chunk of request) raw += chunk;
+    captured.push(JSON.parse(raw));
+    response.setHeader('content-type', 'application/json');
+    response.end(JSON.stringify(request.url === '/v1/install'
+      ? { installationId: crypto.randomUUID(), token: 'synthetic-relay-token', expiresAt: '2099-01-01T00:00:00Z' }
+      : { accepted: true }));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  await writeFile(join(directory, 'telemetry.json'), JSON.stringify({
+    version: 1,
+    enabled: true,
+    disclosed: true,
+    graceConsumed: true,
+    installationEventPending: false,
+    contactEnabled: false,
+    installationId: crypto.randomUUID(),
+    token: 'synthetic-token',
+    tokenExpiresAt: '2099-01-01T00:00:00Z',
+  }));
+  const preload = `import cp from 'node:child_process'; import { syncBuiltinESMExports } from 'node:module'; Object.defineProperty(process, 'platform', { value: 'linux' }); cp.execFileSync = (file, args) => { if (file === 'secret-tool' && args[0] === 'lookup') return ${JSON.stringify(JSON.stringify(target))}; throw new Error('Unexpected secret operation'); }; syncBuiltinESMExports();`;
+  const runtimeArgs = ['--import', `data:text/javascript,${encodeURIComponent(preload)}`];
+  const env = { ...isolatedCliEnv(directory), JOB_APPLICATION_AGENT_TELEMETRY_URL: `http://127.0.0.1:${server.address().port}` };
+  const script = fileURLToPath(new URL('../scripts/job-application.mjs', import.meta.url));
+
+  const scored = await runCli(script, ['score', '--stdin'], {
+    ...matchingJob,
+    url: 'https://jobs.example.com/apply/lifecycle-started',
+    requiredFieldCount: 6,
+    resumeRequired: true,
+    coverLetterRequired: false,
+    referralPresent: false,
+  }, env, runtimeArgs);
+  assert.equal(scored.code, 0, scored.stderr);
+  const started = captured.find((body) => body.event === 'application_started');
+  assert.ok(started, JSON.stringify(captured));
+  assert.equal(started.properties.ats, 'greenhouse');
+  assert.equal(started.properties.approvalMode, 'review-each');
+  assert.equal(started.properties.requiredFieldCount, 6);
+  assert.equal(started.properties.resumeRequired, true);
+  assert.equal(JSON.stringify(started).includes('lifecycle-started'), false);
+
+  const beforePause = captured.length;
+  const paused = await runCli(script, ['attention', 'add', '--stdin'], {
+    roundId: 'round-lifecycle',
+    applicationId: 'app-lifecycle',
+    url: 'https://jobs.example.com/apply/lifecycle-paused',
+    stage: 'review',
+    blocker: 'captcha',
+    requiredActions: ['complete-captcha'],
+  }, env, runtimeArgs);
+  assert.equal(paused.code, 0, paused.stderr);
+  const pauseEvent = captured.slice(beforePause).find((body) => body.event === 'application_paused');
+  assert.ok(pauseEvent, JSON.stringify(captured.slice(beforePause)));
+  assert.equal(pauseEvent.properties.stage, 'review');
+  assert.equal(pauseEvent.properties.reason, 'captcha');
+  assert.equal(pauseEvent.properties.ats, 'other');
 });
 
 test('CLI never attaches candidate name/email/phone to analytics events', async (t) => {
