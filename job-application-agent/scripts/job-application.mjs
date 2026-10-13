@@ -138,10 +138,11 @@ export function telemetryErrorCategory(error) {
   const message = String(error?.message ?? '');
   if (/^Usage:/i.test(message)) return 'usage';
   if (/keychain|keyring|secret service|secret-tool|credential manager|dpapi|authentication|login|lease/i.test(message)) return 'auth';
+  // Resume/PDF upload before generic http/network (export errors often include "HTTP").
+  if (/upload|resume|pdf/i.test(message)) return 'upload';
   if (/network|fetch|http|relay|unavailable/i.test(message)) return 'network';
   if (/profile|migration|missing or unreadable/i.test(message)) return 'profile';
   if (/cloud|intent/i.test(message)) return 'cloud';
-  if (/upload|resume|pdf/i.test(message)) return 'upload';
   if (/duplicate|ledger|submission|submitted|approval|telemetry\./i.test(message)) return 'submission';
   if (/invalid|must|required|expected|unsupported/i.test(message)) return 'validation';
   return 'other';
@@ -152,9 +153,10 @@ export function telemetryErrorCode(error) {
   if (/^Usage:/i.test(message)) return 'invalid_input';
   if (/keychain|keyring|secret service|secret-tool|credential manager|dpapi|authentication|login/i.test(message)) return 'authentication_required';
   if (/No local cloud lease|lease is recorded|live lease/i.test(message)) return 'authentication_required';
+  // Resume/PDF upload failures before generic network/http matching (messages often include "HTTP").
+  if (/upload failed|Resume export failed|did not contain a valid PDF|Canonical resume/i.test(message)) return 'upload_failed';
   if (/Cloud state (unavailable|request failed)|network|fetch|http|relay unavailable|upstream/i.test(message)) return 'network_failure';
   if (/rate.?limit/i.test(message)) return 'rate_limited';
-  if (/upload failed|Resume export failed|did not contain a valid PDF|Canonical resume/i.test(message)) return 'upload_failed';
   if (/missing or unreadable|needs migration|Expected one JSON|Unknown |is invalid|must be|requires |required|expected|unsupported|Hard duplicate|cooldown|follow-up|Usage:/i.test(message)) return 'invalid_input';
   if (/invalid|must|required|expected|unsupported/i.test(message)) return 'invalid_input';
   return 'internal_error';

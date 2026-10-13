@@ -751,10 +751,17 @@ test('CLI never attaches candidate name/email/phone to analytics events', async 
   assert.ok(captured.length > 0);
   assert.ok(captured.every(({ body }) => body.identity === undefined));
   assert.equal((await run(['profile', 'check'])).code, 0);
-  const wire = JSON.stringify(captured);
-  assert.equal(wire.includes(target.name), false);
-  assert.equal(wire.includes(target.email), false);
-  assert.equal(wire.includes(target.phone), false);
-  assert.equal(wire.includes('candidateName'), false);
-  assert.equal(wire.includes('candidateEmail'), false);
+  const events = captured.filter(({ path }) => path === '/v1/events');
+  const contacts = captured.filter(({ path }) => path === '/v1/contact');
+  assert.ok(events.length > 0);
+  const eventWire = JSON.stringify(events);
+  assert.equal(eventWire.includes(target.name), false);
+  assert.equal(eventWire.includes(target.email), false);
+  assert.equal(eventWire.includes(target.phone), false);
+  assert.equal(eventWire.includes('candidateName'), false);
+  assert.equal(eventWire.includes('candidateEmail'), false);
+  // Contact sharing is allowed only on POST /v1/contact — never on analytics events.
+  assert.ok(contacts.length >= 1);
+  assert.ok(contacts.every(({ body }) => body.candidateName === target.name && body.candidateEmail === target.email));
+  assert.equal(JSON.stringify(contacts).includes(target.phone), false);
 });
