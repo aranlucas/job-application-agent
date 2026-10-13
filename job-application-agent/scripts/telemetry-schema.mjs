@@ -29,6 +29,7 @@ const OUTCOMES = values('interview', 'rejected', 'offer', 'withdrawn');
 const INTERVIEW_QUALITIES = values('promising', 'viable', 'weak', 'dead');
 const FAILURE_POINTS = values('role-scope', 'company-problem', 'constraints', 'interviewer', 'process', 'unknown');
 const ERROR_CODES = values('invalid_input', 'network_failure', 'relay_unavailable', 'authentication_required', 'site_changed', 'upload_failed', 'submission_unconfirmed', 'rate_limited', 'internal_error');
+const ERROR_CATEGORIES = values('schema_invalid', 'validation', 'profile', 'cloud', 'network', 'auth', 'site', 'upload', 'submission', 'usage', 'other');
 const MATCH_TAGS = values('role_family', 'seniority', 'skills', 'industry', 'location', 'remote', 'salary', 'ai', 'product', 'leadership', 'authorization');
 const GAP_TAGS = values('role_family', 'seniority', 'skills', 'industry', 'location', 'salary_unknown', 'salary_below', 'authorization_unclear', 'sponsorship', 'experience', 'domain', 'other');
 const DISCOVERY_SOURCE_KEYS = values('direct-company-careers', 'linkedin-jobs-feed', 'x-hiring-feed', 'yc-work-at-a-startup', 'yc-company-directory', 'hacker-news-who-is-hiring', 'we-work-remotely', 'a16z-build-jobs', 'engg-space', 'js-guru-jobs', 'linux-careers', 'indeed', 'recruiter-inbound', 'user-supplied-leads', 'community');
@@ -40,6 +41,32 @@ const integer = (min, max) => ({ kind: 'integer', min, max });
 const boolean = { kind: 'boolean' };
 const enumValue = (set) => ({ kind: 'enum', set });
 const enumArray = (set, max = 12) => ({ kind: 'enum-array', set, max });
+
+/** Strip emails, phones, query-bearing URLs, and candidate-entered values from error text. */
+export function sanitizeTelemetryErrorMessage(value, { max = 160 } = {}) {
+  if (typeof value !== 'string' || !value.trim()) return undefined;
+  let textValue = value
+    .replace(/[^\s@]+@[^\s@]+\.[^\s@]+/gi, '[redacted-email]')
+    .replace(/(?:\+?\d[\d\s().-]{6,}\d)/g, '[redacted-phone]')
+    .replace(/https?:\/\/[^\s]+/gi, '[redacted-url]')
+    .replace(/\bwww\.[^\s]+/gi, '[redacted-url]')
+    .replace(/\b(?:password|token|secret|authorization|bearer)\b\s*[:=]\s*\S+/gi, '[redacted-secret]')
+    .replace(/[\x00-\x1f\x7f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!textValue) return undefined;
+  if (textValue.length > max) textValue = `${textValue.slice(0, max - 1)}…`;
+  if (containsDirectIdentity(textValue)) return '[redacted]';
+  return textValue;
+}
+
+export function sanitizeTelemetryFieldLabel(value, { max = 80 } = {}) {
+  if (typeof value !== 'string' || !value.trim()) return undefined;
+  let label = value.replace(/[\x00-\x1f\x7f]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (/[^\s@]+@[^\s@]+\.[^\s@]+/i.test(label) || /(?:\+?\d[\d\s().-]{6,}\d)/.test(label) || /https?:\/\//i.test(label)) return undefined;
+  if (label.length > max) label = `${label.slice(0, max - 1)}…`;
+  return label || undefined;
+}
 
 const JOB = {
   company: text(160, true), title: text(200, true), jobHash: { kind: 'hash' }, domain: { kind: 'domain' }, ats: enumValue(ATS),
@@ -62,7 +89,16 @@ export const EVENT_SCHEMAS = {
     optional: { interviewQuality: enumValue(INTERVIEW_QUALITIES), failurePoint: enumValue(FAILURE_POINTS) },
   },
   review_generated: { required: { submissionCount: integer(0, 100000), interviewCount: integer(0, 100000), rejectionCount: integer(0, 100000), offerCount: integer(0, 100000), withdrawalCount: integer(0, 100000), reviewDue: boolean } },
-  skill_error: { required: { errorCode: enumValue(ERROR_CODES), stage: enumValue(STAGES), recoverable: boolean }, optional: { ats: enumValue(ATS), jobHash: { kind: 'hash' } } },
+  skill_error: {
+    required: { errorCode: enumValue(ERROR_CODES), stage: enumValue(STAGES), recoverable: boolean },
+    optional: {
+      ats: enumValue(ATS),
+      jobHash: { kind: 'hash' },
+      errorCategory: enumValue(ERROR_CATEGORIES),
+      sanitizedMessage: text(160, true),
+      fieldLabel: text(80, true),
+    },
+  },
 };
 
 export function containsDirectIdentity(value) {
@@ -172,9 +208,10 @@ export function createTelemetryEnvelope({ installationId, token, event, properti
   if (!UUID.test(installationId)) throw new Error('installationId must be an anonymous UUID.');
   if (typeof token !== 'string' || token.length < 8 || token.length > 2048) throw new Error('token is invalid.');
   if (typeof skillVersion !== 'string' || !VERSION.test(skillVersion)) throw new Error('skillVersion is invalid.');
+  // Accept and discard identity for compatibility with older clients; never include it.
+  if (identity !== undefined) validateTelemetryIdentity(identity);
   const safe = validateEvent(typeof event === 'string' ? { event, properties } : event);
   const envelope = { schemaVersion: TELEMETRY_SCHEMA_VERSION, skillVersion, installationId, token, ...safe };
-  if (identity !== undefined) envelope.identity = validateTelemetryIdentity(identity);
   if (new TextEncoder().encode(JSON.stringify(envelope)).length > TELEMETRY_MAX_BYTES) throw new Error('Telemetry payload exceeds 4 KB.');
   return envelope;
 }

@@ -12,7 +12,7 @@ import { createSecretStore, migrateLegacyStateDir, resolveStateDir } from './sec
 import { SourceCommunityClient } from './source-community-client.mjs';
 import { normalizeCommunityJob, normalizeCommunitySource } from './source-community-schema.mjs';
 import { TelemetryClient } from './telemetry-client.mjs';
-import { jobIdentity } from './telemetry-schema.mjs';
+import { jobIdentity, sanitizeTelemetryErrorMessage, sanitizeTelemetryFieldLabel } from './telemetry-schema.mjs';
 import { CloudStateClient, defaultCloudConfigPath, enableCloudUpdateGuard, saveCloudConfig } from './cloud-state-client.mjs';
 import {
   SESSION_BINDING_ATTENTION_KEYS,
@@ -123,19 +123,63 @@ export function commandCategory([area, action]) {
   if (area === 'round') return 'round';
   if (area === 'sources') return 'search';
   if (area === 'attention' || area === 'friction') return 'batch';
+  if (area === 'cloud') return 'other';
   return 'other';
 }
 
-function telemetryStage(command) {
-  return ({ search: 'discovery', assess: 'assessment', apply: 'submission', outcome: 'outcome', review: 'review', resume: 'resume', profile: 'contact', onboard: 'contact' })[command] ?? 'application';
+function telemetryStage(command, error) {
+  const message = String(error?.message ?? '');
+  if (/^Usage:/i.test(message)) return 'application';
+  if (/cloud|lease|intent/i.test(message)) return 'application';
+  return ({ search: 'discovery', assess: 'assessment', apply: 'submission', outcome: 'outcome', review: 'review', resume: 'resume', profile: 'contact', onboard: 'contact', batch: 'application', other: 'application' })[command] ?? 'application';
+}
+
+export function telemetryErrorCategory(error) {
+  const message = String(error?.message ?? '');
+  if (/^Usage:/i.test(message)) return 'usage';
+  if (/keychain|keyring|secret service|secret-tool|credential manager|dpapi|authentication|login|lease/i.test(message)) return 'auth';
+  // Resume/PDF upload before generic http/network (export errors often include "HTTP").
+  if (/upload|resume|pdf/i.test(message)) return 'upload';
+  if (/network|fetch|http|relay|unavailable/i.test(message)) return 'network';
+  if (/profile|migration|missing or unreadable/i.test(message)) return 'profile';
+  if (/cloud|intent/i.test(message)) return 'cloud';
+  if (/duplicate|ledger|submission|submitted|approval|telemetry\./i.test(message)) return 'submission';
+  if (/invalid|must|required|expected|unsupported/i.test(message)) return 'validation';
+  return 'other';
 }
 
 export function telemetryErrorCode(error) {
   const message = String(error?.message ?? '');
+  if (/^Usage:/i.test(message)) return 'invalid_input';
   if (/keychain|keyring|secret service|secret-tool|credential manager|dpapi|authentication|login/i.test(message)) return 'authentication_required';
-  if (/network|fetch|http/i.test(message)) return 'network_failure';
+  if (/No local cloud lease|lease is recorded|live lease/i.test(message)) return 'authentication_required';
+  // Resume/PDF upload failures before generic network/http matching (messages often include "HTTP").
+  if (/upload failed|Resume export failed|did not contain a valid PDF|Canonical resume/i.test(message)) return 'upload_failed';
+  if (/Cloud state (unavailable|request failed)|network|fetch|http|relay unavailable|upstream/i.test(message)) return 'network_failure';
+  if (/rate.?limit/i.test(message)) return 'rate_limited';
+  if (/missing or unreadable|needs migration|Expected one JSON|Unknown |is invalid|must be|requires |required|expected|unsupported|Hard duplicate|cooldown|follow-up|Usage:/i.test(message)) return 'invalid_input';
   if (/invalid|must|required|expected|unsupported/i.test(message)) return 'invalid_input';
   return 'internal_error';
+}
+
+export function telemetryErrorFieldLabel(error) {
+  const message = String(error?.message ?? '');
+  const match = message.match(/\b((?:entry|profile|job|attention|friction|outcome|coverage|round|candidate)\.[A-Za-z0-9_.]+)\b/);
+  return sanitizeTelemetryFieldLabel(match?.[1]);
+}
+
+export function skillErrorProperties(error, command) {
+  const properties = {
+    errorCode: telemetryErrorCode(error),
+    stage: telemetryStage(command, error),
+    recoverable: true,
+    errorCategory: telemetryErrorCategory(error),
+  };
+  const sanitizedMessage = sanitizeTelemetryErrorMessage(error?.message);
+  if (sanitizedMessage) properties.sanitizedMessage = sanitizedMessage;
+  const fieldLabel = telemetryErrorFieldLabel(error);
+  if (fieldLabel) properties.fieldLabel = fieldLabel;
+  return properties;
 }
 
 function sourceToAts(source) {
@@ -192,11 +236,37 @@ async function telemetryApplicationSubmitted(entry, details = {}) {
       company: entry.company,
       title: entry.role,
       ats: sourceToAts(entry.applicationChannel ?? entry.source),
-      durationBucket: details.durationBucket ?? 'under-1s',
+      durationBucket: details.durationBucket ?? durationBucket(0),
       fieldsFilled: details.fieldsFilled ?? answers.length,
       shortAnswerCount: details.shortAnswerCount ?? answers.filter((key) => !/resume|attachment/i.test(key)).length,
       resumeUploaded: details.resumeUploaded ?? answers.some((key) => /resume|attachment/i.test(key)),
       approvalMode: entry.approval === 'STANDING AUTHORIZATION' ? 'routine-auto' : 'review-each',
+    },
+  };
+}
+
+function skipReasonFromAssessment(result) {
+  const gaps = (result.gaps ?? []).join(' ').toLowerCase();
+  if (/closed|stale/i.test(gaps)) return 'closed';
+  if (/location|work mode|remote|excluded location/i.test(gaps)) return 'location';
+  if (/salary/i.test(gaps)) return 'salary';
+  if (/seniority/i.test(gaps)) return 'seniority';
+  if (/eligib|authoriz|excluded by the candidate/i.test(gaps)) return 'ineligible';
+  if (/skill|role family|experience/i.test(gaps)) return 'low-fit';
+  if (result.decision === 'exclude') return 'ineligible';
+  return 'candidate-choice';
+}
+
+export async function telemetryApplicationSkipped(job, result) {
+  if (!job?.url) return null;
+  const identity = await jobIdentity(job.url);
+  return {
+    event: 'application_skipped',
+    properties: {
+      jobHash: identity.jobHash,
+      reason: skipReasonFromAssessment(result),
+      fitScore: result.score,
+      eligibility: String(job.eligibility ?? 'unclear').toLowerCase(),
     },
   };
 }
@@ -517,14 +587,33 @@ export function validateLedgerCheckCandidate(input) {
 export function validateSubmissionTelemetry(input) {
   if (input == null) return {};
   const value = object(input, 'entry.telemetry');
-  const allowed = new Set(['durationBucket', 'fieldsFilled', 'shortAnswerCount', 'resumeUploaded']);
+  const allowed = new Set(['durationBucket', 'durationMs', 'startedAt', 'endedAt', 'fieldsFilled', 'shortAnswerCount', 'resumeUploaded']);
   for (const key of Object.keys(value)) if (!allowed.has(key)) throw new Error(`Unknown entry.telemetry property: ${key}.`);
   if (value.durationBucket != null && !TELEMETRY_DURATIONS.has(value.durationBucket)) throw new Error('entry.telemetry.durationBucket is invalid.');
+  if (value.durationMs != null && (!Number.isInteger(value.durationMs) || value.durationMs < 0 || value.durationMs > 86_400_000)) {
+    throw new Error('entry.telemetry.durationMs must be an integer from 0 to 86400000.');
+  }
+  for (const key of ['startedAt', 'endedAt']) {
+    if (value[key] != null && Number.isNaN(Date.parse(value[key]))) throw new Error(`entry.telemetry.${key} must be an ISO date.`);
+  }
   for (const [key, max] of [['fieldsFilled', 500], ['shortAnswerCount', 100]]) {
     if (value[key] != null && (!Number.isInteger(value[key]) || value[key] < 0 || value[key] > max)) throw new Error(`entry.telemetry.${key} must be an integer from 0 to ${max}.`);
   }
   if (value.resumeUploaded != null && typeof value.resumeUploaded !== 'boolean') throw new Error('entry.telemetry.resumeUploaded must be a Boolean.');
-  return Object.fromEntries(Object.entries(value).filter(([, item]) => item != null));
+  const details = Object.fromEntries(Object.entries(value).filter(([, item]) => item != null));
+  if (details.durationBucket == null) {
+    let milliseconds = details.durationMs;
+    if (milliseconds == null && details.startedAt && details.endedAt) {
+      milliseconds = Math.max(0, Date.parse(details.endedAt) - Date.parse(details.startedAt));
+    } else if (milliseconds == null && details.startedAt) {
+      milliseconds = Math.max(0, Date.now() - Date.parse(details.startedAt));
+    }
+    if (Number.isInteger(milliseconds)) details.durationBucket = durationBucket(milliseconds);
+  }
+  delete details.durationMs;
+  delete details.startedAt;
+  delete details.endedAt;
+  return details;
 }
 
 function normalizedText(value) {
@@ -1733,7 +1822,8 @@ async function prepareCloudState(area, action) {
     // New submissions still fail closed because lease and intent operations
     // call the cloud directly. Local checks, research, and observed-result
     // ledger appends can continue and queue their idempotent recovery writes.
-    if (!/^Cloud state unavailable:/.test(error.message)) throw error;
+    // Treat transport and HTTP relay failures the same for automatic recovery.
+    if (!/^Cloud state (unavailable|request failed)/.test(error.message)) throw error;
   }
 }
 
@@ -1833,8 +1923,12 @@ function roundCompletedTelemetry(round) {
   };
 }
 
+async function emitDomainEvent(telemetry, session, event) {
+  if (!event) return;
+  await telemetry.record(event, session);
+}
+
 async function executeCommand([area, action, value], telemetry, session, community) {
-  const domainEvents = [];
   let result;
   if (area === 'cloud') result = await cloudCommand(action, value);
   else if (area === 'profile' && action === 'set' && value === '--stdin') {
@@ -1852,8 +1946,10 @@ async function executeCommand([area, action, value], telemetry, session, communi
   else if (area === 'score' && action === '--stdin') {
     const job = await jsonStdin();
     result = scoreJob(job, job.target ?? storedProfile());
-    const event = await telemetryJobAssessed(job, result);
-    if (event) domainEvents.push(event);
+    await emitDomainEvent(telemetry, session, await telemetryJobAssessed(job, result));
+    if (result.decision === 'skip' || result.decision === 'exclude') {
+      await emitDomainEvent(telemetry, session, await telemetryApplicationSkipped(job, result));
+    }
   } else if (area === 'ledger' && action === 'check' && value === '--stdin') result = await ledgerCheck(await jsonStdin());
   else if (area === 'ledger' && action === 'delivery' && value === '--stdin') result = await recordDelivery(await jsonStdin());
   else if (area === 'ledger' && action === 'retry' && value === '--stdin') result = await recordDelivery(await jsonStdin(), true);
@@ -1865,16 +1961,17 @@ async function executeCommand([area, action, value], telemetry, session, communi
     result = await ledgerAdd(entry, input.duplicateOverride, input.companyReapplyOverride, input.cloudIntentId && input.cloudLeaseId ? { intentId: input.cloudIntentId, leaseId: input.cloudLeaseId } : null);
     result.communityJob = await communityJobsSync(community, { limit: 1, applicationIds: [entry.id] });
     if (!isFixtureOrSandboxApply(entry)) {
-      domainEvents.push(await telemetryApplicationSubmitted(entry, telemetryDetails));
+      await emitDomainEvent(telemetry, session, await telemetryApplicationSubmitted(entry, telemetryDetails));
     }
   } else if (area === 'ledger' && action === 'outcome' && value === '--stdin') {
     const outcome = await ledgerOutcome(await jsonStdin());
     result = outcome.result;
-    const event = outcome.result.recorded && !outcome.result.enriched ? await outcomeTelemetry(outcome.application, outcome.event) : null;
-    if (event) domainEvents.push(event);
+    if (outcome.result.recorded && !outcome.result.enriched) {
+      await emitDomainEvent(telemetry, session, await outcomeTelemetry(outcome.application, outcome.event));
+    }
   } else if (area === 'ledger' && action === 'review') {
     result = await ledgerReview();
-    domainEvents.push(reviewTelemetry(result));
+    await emitDomainEvent(telemetry, session, reviewTelemetry(result));
   } else if (area === 'ledger' && action === 'review-ack' && value === '--stdin') {
     result = await ledgerReviewAcknowledge(await jsonStdin());
   } else if (area === 'autonomy' && action === 'grant' && value === '--stdin') result = await autonomyGrant(await jsonStdin());
@@ -1886,7 +1983,7 @@ async function executeCommand([area, action, value], telemetry, session, communi
   else if (area === 'round' && action === 'leads') result = await leadHistory(value);
   else if (area === 'round' && action === 'source' && value === '--stdin') {
     result = await roundSource(await jsonStdin());
-    domainEvents.push({ event: 'source_checked', properties: {
+    await emitDomainEvent(telemetry, session, { event: 'source_checked', properties: {
       sourceId: result.sourceId.startsWith('community-') ? 'community' : result.sourceId,
       status: result.status, reviewedCount: result.reviewedCount, qualifiedCount: result.qualifiedCount,
       ...(result.blocker ? { blocker: result.blocker } : {}),
@@ -1896,7 +1993,7 @@ async function executeCommand([area, action, value], telemetry, session, communi
   else if (area === 'round' && action === 'confirm' && value === '--stdin') result = await roundConfirm(await jsonStdin());
   else if (area === 'round' && action === 'complete' && value === '--stdin') {
     result = await roundComplete(await jsonStdin());
-    if (result.completionRecorded) domainEvents.push(roundCompletedTelemetry(result));
+    if (result.completionRecorded) await emitDomainEvent(telemetry, session, roundCompletedTelemetry(result));
   } else if (area === 'sources' && action === 'list' && value == null) {
     await syncAllCommunityData(community);
     result = await sourcesList({}, await community.list());
@@ -1920,7 +2017,6 @@ async function executeCommand([area, action, value], telemetry, session, communi
   else if (area === 'friction' && action === 'record' && value === '--stdin') result = await frictionRecord(await jsonStdin());
   else if (area === 'friction' && action === 'list' && value == null) result = await frictionList();
   else throw new Error('Usage: cloud status|configure --stdin|reconcile [--dry-run]|export [path]|lease-acquire|lease-renew|lease-release|intent-prepare --stdin|intent-sent --stdin|intent-confirm --stdin; profile set|migrate --stdin; profile check|field <name>; resume import <url-or-pdf>|path; score --stdin; ledger check|add|outcome|review-ack --stdin; ledger review; autonomy grant --stdin|status|preview|revoke; round start|source|confirm|complete --stdin|status [round-id]; sources list [--stdin]|jobs [--stdin]|suggest --stdin|pending|sync|sharing status|enable|disable|reset; attention add|resolve --stdin|list; friction record --stdin|list; telemetry status|enable|disable|reset|preview --stdin|record --stdin');
-  for (const event of domainEvents) await telemetry.record(event, session);
   return result;
 }
 
@@ -1946,13 +2042,18 @@ async function main(args) {
     const { runOutreach } = await import('./outreach-cli.mjs');
     return print(await runOutreach(args.slice(1)));
   }
+  // Name/email go only to the private /v1/contact store — never to PostHog event payloads.
   const telemetry = new TelemetryClient({ stateDir: stateDir(), readIdentity: () => {
-    const profile = storedProfileRaw();
-    // Only explicit saved fields; no resume parsing, conversation scraping, or full profile payload.
-    return Object.fromEntries(['name', 'email'].filter((key) => typeof profile[key] === 'string' && profile[key].trim()).map((key) => [key, profile[key]]));
+    try {
+      const profile = storedProfileRaw();
+      return Object.fromEntries(['name', 'email'].filter((key) => typeof profile[key] === 'string' && profile[key].trim()).map((key) => [key, profile[key]]));
+    } catch {
+      return undefined;
+    }
   } });
   const community = new SourceCommunityClient({ stateDir: stateDir() });
   if (area === 'telemetry') {
+    if (action === 'contact' && ['status', 'enable', 'disable'].includes(value) && args.length === 3) return print(await telemetry.configureContact(value));
     if (action === 'identity' && ['status', 'enable', 'disable'].includes(value) && args.length === 3) return print(await telemetry.configureIdentity(value));
     if (['status', 'enable', 'disable', 'reset'].includes(action) && value == null) return print(await telemetry.configure(action));
     if (action === 'preview' && value === '--stdin') return print(await telemetry.preview(await jsonStdin()));
@@ -1961,22 +2062,21 @@ async function main(args) {
       await recordInstallationStart(telemetry, session);
       return print(await telemetry.record(await jsonStdin(), session, { strict: true }));
     }
-    throw new Error('Usage: telemetry status|enable|disable|reset|preview --stdin|record --stdin; telemetry identity status|enable|disable');
+    throw new Error('Usage: telemetry status|enable|disable|reset|preview --stdin|record --stdin; telemetry contact status|enable|disable; telemetry identity status|enable|disable');
   }
-
-  await prepareCloudState(area, action);
 
   const command = commandCategory(args);
   const session = await telemetry.beginCommand(command);
   await recordInstallationStart(telemetry, session);
   const started = Date.now();
   try {
+    await prepareCloudState(area, action);
     const result = await executeCommand(args, telemetry, session, community);
     if (!(area === 'sources' || (area === 'ledger' && action === 'add'))) await communityJobsSync(community).catch(() => null);
     await telemetry.record({ event: 'command_completed', properties: { command, result: 'success', durationBucket: durationBucket(Date.now() - started) } }, session);
     return print(result);
   } catch (error) {
-    await telemetry.record({ event: 'skill_error', properties: { errorCode: telemetryErrorCode(error), stage: telemetryStage(command), recoverable: true } }, session);
+    await telemetry.record({ event: 'skill_error', properties: skillErrorProperties(error, command) }, session);
     await telemetry.record({ event: 'command_completed', properties: { command, result: 'error', durationBucket: durationBucket(Date.now() - started) } }, session);
     throw error;
   }

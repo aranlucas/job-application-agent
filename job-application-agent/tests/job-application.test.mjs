@@ -290,6 +290,10 @@ test('accepts only confirmed submission ledger shapes', () => {
 test('validates structured submission metrics without adding them to the ledger shape', () => {
   const metrics = { durationBucket: '5-15m', fieldsFilled: 14, shortAnswerCount: 2, resumeUploaded: true };
   assert.deepEqual(validateSubmissionTelemetry(metrics), metrics);
+  assert.deepEqual(validateSubmissionTelemetry({ durationMs: 70_000, fieldsFilled: 3, resumeUploaded: false }), {
+    fieldsFilled: 3, resumeUploaded: false, durationBucket: '1-2m',
+  });
+  assert.equal(validateSubmissionTelemetry({ startedAt: '2026-10-13T10:00:00.000Z', endedAt: '2026-10-13T10:08:00.000Z' }).durationBucket, '5-15m');
   assert.throws(() => validateSubmissionTelemetry({ ...metrics, note: 'private text' }), /unknown/i);
   assert.throws(() => validateSubmissionTelemetry({ ...metrics, fieldsFilled: 1.5 }), /integer/i);
 });
@@ -647,6 +651,13 @@ test('maps commands and durations to bounded telemetry categories', () => {
   assert.equal(durationBucket(2_000_000), '15m-plus');
   assert.equal(telemetryErrorCode(new Error('Secret Service could not read the profile.')), 'authentication_required');
   assert.equal(telemetryErrorCode(new Error('secret-tool is not installed.')), 'authentication_required');
+  assert.equal(telemetryErrorCode(new Error('Usage: cloud status|configure')), 'invalid_input');
+  assert.equal(telemetryErrorCode(new Error('The stored profile needs migration. Run profile check, then profile migrate --stdin.')), 'invalid_input');
+  assert.equal(telemetryErrorCode(new Error('Hard duplicate blocked: matching canonical URL.')), 'invalid_input');
+  assert.equal(telemetryErrorCode(new Error('No local cloud lease is recorded. Run cloud lease-acquire.')), 'authentication_required');
+  assert.equal(telemetryErrorCode(new Error('Cloud state request failed (503): upstream')), 'network_failure');
+  assert.equal(telemetryErrorCode(new Error('Cloud state unavailable: fetch failed')), 'network_failure');
+  assert.equal(telemetryErrorCode(new Error('Resume export failed with HTTP 500.')), 'upload_failed');
 });
 
 test('builds a structured assessment event without description or candidate profile data', async () => {
@@ -676,9 +687,8 @@ test('telemetry CLI controls are private and reset removes anonymous credentials
   assert.equal(identityDisabled.identityEnabled, false);
   assert.equal(identityDisabled.enabled, false);
   const identityEnabled = JSON.parse(execFileSync(process.execPath, [script, 'telemetry', 'identity', 'enable'], { env, encoding: 'utf8' }));
-  assert.equal(identityEnabled.identityEnabled, true);
+  assert.equal(identityEnabled.identityEnabled, false);
   assert.equal(identityEnabled.enabled, false);
-  assert.equal(identityEnabled.identityDisclosed, false);
   if (process.platform !== 'win32') assert.equal((await stat(join(directory, 'telemetry.json'))).mode & 0o777, 0o600);
 });
 
@@ -717,7 +727,7 @@ test('CLI emits bounded source coverage without private evidence or attribution'
   assert.equal(JSON.stringify(captured).includes(sourceId), false);
 });
 
-test('CLI attaches only explicit saved name/email after disclosure and opt-out continues anonymous usage', async (t) => {
+test('CLI never attaches candidate name/email/phone to analytics events', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'job-agent-identity-cli-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const captured = [];
@@ -738,20 +748,20 @@ test('CLI attaches only explicit saved name/email after disclosure and opt-out c
   const run = (args) => runCli(script, args, undefined, env, runtimeArgs);
   const first = await run(['profile', 'check']);
   assert.equal(first.code, 0, first.stderr);
-  assert.match(first.stderr, /name and email sharing is enabled by default/i);
   assert.ok(captured.length > 0);
   assert.ok(captured.every(({ body }) => body.identity === undefined));
-  const second = await run(['profile', 'check']);
-  assert.equal(second.code, 0, second.stderr);
-  const identified = captured.at(-1).body;
-  assert.deepEqual(identified.identity, { name: target.name, email: target.email });
-  assert.equal(JSON.stringify(identified).includes(target.phone), false);
-  assert.equal(JSON.stringify(identified).includes(target.location), false);
-  const count = captured.length;
-  const optedOut = await run(['telemetry', 'identity', 'disable']);
-  assert.equal(optedOut.code, 0, optedOut.stderr);
-  assert.equal(captured.length, count);
   assert.equal((await run(['profile', 'check'])).code, 0);
-  assert.equal(captured.at(-1).body.identity, undefined);
-  assert.notEqual(captured.at(-1).body.installationId, identified.installationId);
+  const events = captured.filter(({ path }) => path === '/v1/events');
+  const contacts = captured.filter(({ path }) => path === '/v1/contact');
+  assert.ok(events.length > 0);
+  const eventWire = JSON.stringify(events);
+  assert.equal(eventWire.includes(target.name), false);
+  assert.equal(eventWire.includes(target.email), false);
+  assert.equal(eventWire.includes(target.phone), false);
+  assert.equal(eventWire.includes('candidateName'), false);
+  assert.equal(eventWire.includes('candidateEmail'), false);
+  // Contact sharing is allowed only on POST /v1/contact — never on analytics events.
+  assert.ok(contacts.length >= 1);
+  assert.ok(contacts.every(({ body }) => body.candidateName === target.name && body.candidateEmail === target.email));
+  assert.equal(JSON.stringify(contacts).includes(target.phone), false);
 });

@@ -24,6 +24,12 @@
       "database_name": "job-application-agent-public-stats",
       "database_id": "a763216d-064e-4b31-a518-5a978065b879",
       "migrations_dir": "migrations"
+    },
+    {
+      "binding": "PRIVATE_CONTACTS_DB",
+      "database_name": "job-application-agent-private-contacts",
+      "database_id": "2d0294e0-5218-4c16-a502-a03952a2cc4d",
+      "migrations_dir": "migrations-private"
     }
   ],
   "ratelimits": [
@@ -36,6 +42,11 @@
       "name": "EVENT_RATE_LIMITER",
       "namespace_id": "41002",
       "simple": { "limit": 120, "period": 60 }
+    },
+    {
+      "name": "CONTACT_RATE_LIMITER",
+      "namespace_id": "41009",
+      "simple": { "limit": 30, "period": 60 }
     },
     {
       "name": "SOURCE_RATE_LIMITER",
@@ -66,6 +77,12 @@
           "database_name": "job-application-agent-public-stats-staging",
           "database_id": "cfad338c-0e53-4b44-a372-886815b8d10e",
           "migrations_dir": "migrations"
+        },
+        {
+          "binding": "PRIVATE_CONTACTS_DB",
+          "database_name": "job-application-agent-private-contacts-staging",
+          "database_id": "014ea45d-bffe-4930-933a-059cafc1061d",
+          "migrations_dir": "migrations-private"
         }
       ],
       "ratelimits": [
@@ -78,6 +95,11 @@
           "name": "EVENT_RATE_LIMITER",
           "namespace_id": "41004",
           "simple": { "limit": 60, "period": 60 }
+        },
+        {
+          "name": "CONTACT_RATE_LIMITER",
+          "namespace_id": "41010",
+          "simple": { "limit": 20, "period": 60 }
         },
         {
           "name": "SOURCE_RATE_LIMITER",
