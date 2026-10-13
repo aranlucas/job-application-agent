@@ -9,14 +9,15 @@ import {
   validateTelemetryEnvelope,
 } from '../scripts/telemetry-schema.mjs';
 
-test('identity envelope accepts only bounded name and email and keeps old anonymous envelopes compatible', () => {
+test('identity envelopes are accepted for compatibility but stripped from the wire payload', () => {
   const input = { installationId: '11111111-1111-4111-8111-111111111111', token: 'signed-token', skillVersion: '3.3.0', event: 'command_completed', properties: { command: 'profile', result: 'success', durationBucket: 'under-1s' } };
   const envelope = createTelemetryEnvelope({ ...input, identity: { name: ' Test Candidate ', email: ' candidate@example.com ' } });
-  assert.deepEqual(envelope.identity, { name: 'Test Candidate', email: 'candidate@example.com' });
+  assert.equal(envelope.identity, undefined);
+  assert.equal(JSON.stringify(envelope).includes('candidate@example.com'), false);
   assert.deepEqual(validateTelemetryEnvelope(envelope), envelope);
   assert.equal(validateTelemetryEnvelope(createTelemetryEnvelope(input)).identity, undefined);
   for (const identity of [{}, { name: 'x', phone: 'private' }, { email: 'invalid' }, { name: 'x'.repeat(161) }, { email: 'a\nb@example.com' }, { name: 'Test\nPrivate' }, { name: 'Test', resume: 'private' }]) {
-    assert.throws(() => validateTelemetryEnvelope({ ...envelope, identity }), /identity/i);
+    assert.throws(() => createTelemetryEnvelope({ ...input, identity }), /identity|Telemetry identity/i);
   }
 });
 
@@ -116,7 +117,7 @@ test('validates a representative payload for every documented event', () => {
     { event: 'round_completed', properties: { requestedCount: 10, submittedCount: 7, assessedCount: 15, skippedCount: 5, pausedCount: 2, errorCount: 1, durationBucket: '15m-plus' } },
     { event: 'outcome_recorded', properties: { ...baseJob, outcome: 'interview', daysSinceSubmission: 4, interviewQuality: 'promising', failurePoint: 'process' } },
     { event: 'review_generated', properties: { submissionCount: 10, interviewCount: 1, rejectionCount: 2, offerCount: 0, withdrawalCount: 0, reviewDue: true } },
-    { event: 'skill_error', properties: { errorCode: 'site_changed', stage: 'application', ats: 'comeet', jobHash: baseJob.jobHash, recoverable: true } },
+    { event: 'skill_error', properties: { errorCode: 'site_changed', stage: 'application', ats: 'comeet', jobHash: baseJob.jobHash, recoverable: true, errorCategory: 'site', sanitizedMessage: 'Site changed during fill', fieldLabel: 'entry.url' } },
   ];
   for (const sample of samples) assert.equal(validateEvent(sample).event, sample.event);
 });
