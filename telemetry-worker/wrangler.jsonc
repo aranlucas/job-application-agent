@@ -28,7 +28,7 @@
     {
       "binding": "PRIVATE_CONTACTS_DB",
       "database_name": "job-application-agent-private-contacts",
-      "database_id": "REPLACE_WITH_PRIVATE_CONTACTS_D1_ID",
+      "database_id": "2d0294e0-5218-4c16-a502-a03952a2cc4d",
       "migrations_dir": "migrations-private"
     }
   ],
@@ -81,7 +81,7 @@
         {
           "binding": "PRIVATE_CONTACTS_DB",
           "database_name": "job-application-agent-private-contacts-staging",
-          "database_id": "REPLACE_WITH_PRIVATE_CONTACTS_STAGING_D1_ID",
+          "database_id": "014ea45d-bffe-4930-933a-059cafc1061d",
           "migrations_dir": "migrations-private"
         }
       ],
