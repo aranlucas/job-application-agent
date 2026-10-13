@@ -81,9 +81,11 @@ test("platform guides render usable prompts and publish only known platform rout
     assert.match(html, /npx job-application-agent@latest install/);
     assert.match(html, /visible ATS success/);
     if (platform === "grok") {
-      assert.match(html, /Bot template · review mode/);
-      assert.match(html, /https:\/\/x\.ai\/bot\/0PNQABev0aiAUlhWI83XH/);
-      assert.match(html, /every submit is confirmed/);
+      assert.match(html, /class="eyebrow"[^>]*>Grok Bot[\s\S]*?Bot template · review mode[\s\S]*?<h1/i);
+      assert.match(html, /class="button"[^>]*href="https:\/\/x\.ai\/bot\/0PNQABev0aiAUlhWI83XH"/);
+      assert.match(html, /Open the (?:<!-- -->)?Grok Bot(?:<!-- -->)? template/);
+      assert.match(html, /Starts in review mode, where every submit is confirmed\./);
+      assert.doesNotMatch(html, /template<\/a>\s*[—-]\s*[Ss]tarts in review mode/);
       assert.doesNotMatch(html, /native share link pending/i);
     }
   }
