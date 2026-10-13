@@ -271,6 +271,76 @@ export async function telemetryApplicationSkipped(job, result) {
   };
 }
 
+const TELEMETRY_STAGES = new Set(['discovery', 'assessment', 'application', 'contact', 'resume', 'questions', 'legal', 'demographic', 'review', 'submission', 'confirmation', 'outcome']);
+const ATTENTION_BLOCKER_TO_PAUSE_REASON = Object.freeze({
+  authentication: 'login',
+  mfa: 'mfa',
+  captcha: 'captcha',
+  'legal-attestation': 'legal',
+  demographic: 'demographic',
+  'government-id': 'sensitive-id',
+  'ambiguous-authorization': 'eligibility',
+  'ambiguous-compensation': 'compensation',
+  'unverifiable-claim': 'unverifiable',
+  judgment: 'candidate-judgment',
+  video: 'candidate-judgment',
+  upload: 'attachment',
+  'site-error': 'site-error',
+  other: 'other',
+});
+
+function normalizeTelemetryStage(stage) {
+  const value = String(stage ?? 'application').toLowerCase();
+  if (value === 'answers') return 'questions';
+  if (value === 'upload') return 'resume';
+  return TELEMETRY_STAGES.has(value) ? value : 'application';
+}
+
+function pauseReasonFromBlocker(blocker) {
+  return ATTENTION_BLOCKER_TO_PAUSE_REASON[String(blocker ?? '').toLowerCase()] ?? 'other';
+}
+
+function approvalModeFromJob(job, details = {}) {
+  if (details.approvalMode === 'routine-auto' || details.approvalMode === 'review-each') return details.approvalMode;
+  if (job?.approval === 'STANDING AUTHORIZATION') return 'routine-auto';
+  if (job?.submissionMode === 'routine-auto' || job?.submissionMode === 'review-each') return job.submissionMode;
+  return 'review-each';
+}
+
+export async function telemetryApplicationStarted(job, details = {}) {
+  if (!job?.url) return null;
+  const identity = await jobIdentity(job.url);
+  const requiredFieldCount = Number.isInteger(details.requiredFieldCount)
+    ? details.requiredFieldCount
+    : (Number.isInteger(job.requiredFieldCount) ? job.requiredFieldCount : 0);
+  return {
+    event: 'application_started',
+    properties: {
+      jobHash: identity.jobHash,
+      ats: sourceToAts(String(details.ats ?? job.applicationChannel ?? job.source ?? 'other').toLowerCase()),
+      approvalMode: approvalModeFromJob(job, details),
+      requiredFieldCount,
+      resumeRequired: details.resumeRequired === true || job.resumeRequired === true,
+      coverLetterRequired: details.coverLetterRequired === true || job.coverLetterRequired === true,
+      referralPresent: details.referralPresent === true || job.referralPresent === true,
+    },
+  };
+}
+
+export async function telemetryApplicationPaused(item, details = {}) {
+  if (!item?.url) return null;
+  const identity = await jobIdentity(item.url);
+  return {
+    event: 'application_paused',
+    properties: {
+      jobHash: identity.jobHash,
+      ats: sourceToAts(String(details.ats ?? item.ats ?? item.applicationChannel ?? item.source ?? 'other').toLowerCase()),
+      stage: normalizeTelemetryStage(details.stage ?? item.stage),
+      reason: details.reason ?? pauseReasonFromBlocker(item.blocker),
+    },
+  };
+}
+
 function object(value, label) {
   if (!value || Array.isArray(value) || typeof value !== 'object') throw new Error(`${label} must be an object.`);
   return value;
@@ -1945,10 +2015,20 @@ async function executeCommand([area, action, value], telemetry, session, communi
   else if (area === 'resume' && action === 'path' && value == null) result = await canonicalResumePath();
   else if (area === 'score' && action === '--stdin') {
     const job = await jsonStdin();
-    result = scoreJob(job, job.target ?? storedProfile());
+    const profile = job.target ?? storedProfile();
+    result = scoreJob(job, profile);
     await emitDomainEvent(telemetry, session, await telemetryJobAssessed(job, result));
     if (result.decision === 'skip' || result.decision === 'exclude') {
       await emitDomainEvent(telemetry, session, await telemetryApplicationSkipped(job, result));
+    } else if (result.decision === 'review') {
+      await emitDomainEvent(telemetry, session, await telemetryApplicationStarted(job, {
+        approvalMode: profile.submissionMode,
+        ats: job.applicationChannel ?? job.source,
+        requiredFieldCount: job.requiredFieldCount,
+        resumeRequired: job.resumeRequired,
+        coverLetterRequired: job.coverLetterRequired,
+        referralPresent: job.referralPresent,
+      }));
     }
   } else if (area === 'ledger' && action === 'check' && value === '--stdin') result = await ledgerCheck(await jsonStdin());
   else if (area === 'ledger' && action === 'delivery' && value === '--stdin') result = await recordDelivery(await jsonStdin());
@@ -2011,8 +2091,18 @@ async function executeCommand([area, action, value], telemetry, session, communi
     result = await community.configure(value);
     if (value === 'enable') result.communityJobs = await communityJobsSync(community);
   }
-  else if (area === 'attention' && action === 'add' && value === '--stdin') result = await attentionAdd(await jsonStdin());
-  else if (area === 'attention' && action === 'list' && value == null) result = await attentionList();
+  else if (area === 'attention' && action === 'add' && value === '--stdin') {
+    result = await attentionAdd(await jsonStdin());
+    let ats;
+    if (result.applicationId) {
+      try {
+        const apps = await jsonLines(join(await ensureStateDir(), 'applications.ndjson'));
+        const match = apps.find((entry) => entry.id === result.applicationId);
+        if (match) ats = match.applicationChannel ?? match.source;
+      } catch { /* best-effort ATS for pause telemetry only */ }
+    }
+    await emitDomainEvent(telemetry, session, await telemetryApplicationPaused(result, { ats }));
+  } else if (area === 'attention' && action === 'list' && value == null) result = await attentionList();
   else if (area === 'attention' && action === 'resolve' && value === '--stdin') result = await attentionResolve(await jsonStdin());
   else if (area === 'friction' && action === 'record' && value === '--stdin') result = await frictionRecord(await jsonStdin());
   else if (area === 'friction' && action === 'list' && value == null) result = await frictionList();

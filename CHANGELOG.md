@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.7.4
+
+- Emit `application_started` from `score` when the decision is `review`, and emit `application_paused` from `attention add`, so those events no longer depend on the browser workflow remembering `telemetry record`.
+- Deduplicate `application_started` / `application_paused` per job attempt when the skill also calls `telemetry record`.
+- Reject unused `identity` keys on telemetry event envelopes (analytics keep install id + schema fields only).
+
 ## 3.7.3
 
 - Treat corrupt `telemetry.json` as enabled (unless an explicit opt-out file/env/`telemetry disable`), and rewrite the file instead of permanently disabling analytics.

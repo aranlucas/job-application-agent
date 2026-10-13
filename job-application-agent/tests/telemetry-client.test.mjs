@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { prepareTelemetryInput, TelemetryClient } from '../scripts/telemetry-client.mjs';
+import { lifecycleDedupeKey, prepareTelemetryInput, TelemetryClient } from '../scripts/telemetry-client.mjs';
 
 function fakeRelay({ failTimes = 0, failContactTimes = 0 } = {}) {
   const requests = [];
@@ -314,4 +314,47 @@ test('identity controls remain available as contact aliases and never attach eve
   assert.equal(enabled.contactEnabled, true);
   await client.beginCommand('profile');
   assert.equal(contactBodies(relay).length, 2);
+});
+
+test('dedupes application_started and application_paused per job attempt when record is called twice', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'telemetry-lifecycle-dedupe-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const relay = fakeRelay();
+  const logs = [];
+  const client = new TelemetryClient({
+    stateDir: directory,
+    endpoint: 'https://relay.example.com',
+    fetch: relay.fetch,
+    stderr: () => {},
+    debug: (value) => { logs.push(value); },
+  });
+  const session = await client.beginCommand('apply');
+  const started = {
+    event: 'application_started',
+    properties: {
+      jobHash: 'b'.repeat(64),
+      ats: 'lever',
+      approvalMode: 'review-each',
+      requiredFieldCount: 3,
+      resumeRequired: true,
+      coverLetterRequired: false,
+      referralPresent: false,
+    },
+  };
+  const paused = {
+    event: 'application_paused',
+    properties: { jobHash: 'b'.repeat(64), ats: 'lever', stage: 'legal', reason: 'legal' },
+  };
+  assert.equal(lifecycleDedupeKey(started), `application_started:${'b'.repeat(64)}`);
+  assert.equal((await client.record(started, session)).sent, true);
+  assert.deepEqual(await client.record(started, session), { sent: false, reason: 'duplicate' });
+  assert.equal((await client.record(paused, session)).sent, true);
+  assert.deepEqual(await client.record(paused, session), { sent: false, reason: 'duplicate' });
+  assert.equal((await client.record({
+    event: 'application_paused',
+    properties: { jobHash: 'b'.repeat(64), ats: 'lever', stage: 'submission', reason: 'captcha' },
+  }, session)).sent, true);
+  const lifecycle = eventBodies(relay).filter((body) => ['application_started', 'application_paused'].includes(body.event));
+  assert.equal(lifecycle.length, 3);
+  assert.ok(logs.some((line) => /duplicate_attempt/i.test(line)));
 });

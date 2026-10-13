@@ -32,7 +32,7 @@ node scripts/job-application.mjs telemetry record --stdin
 - `enable` resumes collection with the same installation ID and clears the telemetry opt-out marker.
 - `reset` disables collection and removes the anonymous ID, relay token, and queued events. Enabling later creates a new identity.
 - `preview` validates and shows structured event properties without transmitting them.
-- `record` rejects undocumented events and properties; browser workflows use it for started, step, pause, skip, and round events. Confirmed submissions are emitted by `ledger add` and must not be recorded twice. Score decisions `skip`/`exclude` emit `application_skipped`.
+- `record` rejects undocumented events and properties; browser workflows may still use it for step events and as a fallback for lifecycle events. `score` emits `application_started` on `review` and `application_skipped` on skip/exclude. `attention add` emits `application_paused`. Confirmed submissions are emitted by `ledger add`. Duplicate started/paused/submitted events for the same job attempt are ignored.
 - `status`, `disable`, `reset`, and `preview` never transmit an event. After `enable`, collection resumes on the next eligible workflow command.
 - Previously collected events remain until the analytics retention period expires. Disabling or resetting does not issue a historical-deletion request.
 
@@ -94,4 +94,4 @@ Only documented enums, bounded numbers, Booleans, bounded company/title/country 
 
 ## Release ordering
 
-Deploy the relay (which strips any legacy identity envelope fields) before or with the CLI release. Existing schema-v1 envelopes without identity remain valid. Then release the CLI and updated disclosures together.
+Deploy the relay (which rejects unused `identity` envelope fields) before or with the CLI release. Existing schema-v1 envelopes without identity remain valid. Then release the CLI and updated disclosures together.

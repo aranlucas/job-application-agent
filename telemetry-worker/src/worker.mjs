@@ -114,7 +114,7 @@ async function events(request, env) {
     timestamp: new Date().toISOString(),
     properties: {
       ...envelope.properties,
-      // candidateName/candidateEmail intentionally never forwarded (privacy as of 3.7.3).
+      // candidateName/candidateEmail intentionally never forwarded (privacy as of 3.7.3+); identity envelopes rejected.
       schemaVersion: envelope.schemaVersion, skillVersion: envelope.skillVersion, $process_person_profile: false, $geoip_disable: true,
     },
   };

@@ -14,12 +14,23 @@ export const IDENTITY_NOTICE = 'Contact sharing uses your saved profile name and
 const CONFIG_VERSION = 1;
 const CONFIG_FILE = 'telemetry.json';
 const QUEUE_FILE = 'telemetry-queue.ndjson';
+const DEDUPE_FILE = 'telemetry-attempt-dedupe.json';
 const OPT_OUT_FILE = 'telemetry.opt-out';
 const CONTACT_OPT_OUT_FILE = 'telemetry.contact.opt-out';
 const EVENTS_WITH_DOMAIN = new Set(['job_discovered', 'job_assessed', 'application_submitted', 'outcome_recorded']);
+const DEDUPED_LIFECYCLE_EVENTS = new Set(['application_started', 'application_paused']);
 const QUEUE_MAX_ITEMS = 50;
 const QUEUE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const DEDUPE_MAX_KEYS = 500;
 const RETRY_DELAYS_MS = [50, 150];
+
+export function lifecycleDedupeKey(event) {
+  if (!event || !DEDUPED_LIFECYCLE_EVENTS.has(event.event)) return null;
+  const jobHash = event.properties?.jobHash;
+  if (typeof jobHash !== 'string' || !jobHash) return null;
+  if (event.event === 'application_started') return `application_started:${jobHash}`;
+  return `application_paused:${jobHash}:${event.properties.stage}:${event.properties.reason}`;
+}
 
 export async function prepareTelemetryInput(input) {
   if (!input || Array.isArray(input) || typeof input !== 'object') return validateEvent(input);
@@ -114,6 +125,7 @@ export class TelemetryClient {
 
   get configPath() { return join(this.stateDir, CONFIG_FILE); }
   get queuePath() { return join(this.stateDir, QUEUE_FILE); }
+  get dedupePath() { return join(this.stateDir, DEDUPE_FILE); }
   get optOutPath() { return join(this.stateDir, OPT_OUT_FILE); }
   get contactOptOutPath() { return join(this.stateDir, CONTACT_OPT_OUT_FILE); }
 
@@ -124,6 +136,26 @@ export class TelemetryClient {
   async ensureDirectory() {
     await mkdir(this.stateDir, { recursive: true, mode: 0o700 });
     await chmod(this.stateDir, 0o700);
+  }
+
+  async readLifecycleDedupe() {
+    try {
+      const value = JSON.parse(await readFile(this.dedupePath, 'utf8'));
+      const keys = Array.isArray(value?.keys) ? value.keys.filter((key) => typeof key === 'string') : [];
+      return keys.slice(-DEDUPE_MAX_KEYS);
+    } catch (error) {
+      if (error?.code === 'ENOENT') return [];
+      return [];
+    }
+  }
+
+  async rememberLifecycleDedupe(key) {
+    if (!key) return;
+    await this.ensureDirectory();
+    const keys = await this.readLifecycleDedupe();
+    if (keys.includes(key)) return;
+    keys.push(key);
+    await writePrivate(this.dedupePath, { version: 1, keys: keys.slice(-DEDUPE_MAX_KEYS) });
   }
 
   async explicitOptOut() {
@@ -510,8 +542,16 @@ export class TelemetryClient {
       }
       return { sent: false, reason: 'invalid' };
     }
+    const dedupeKey = lifecycleDedupeKey(event);
+    if (dedupeKey && (await this.readLifecycleDedupe()).includes(dedupeKey)) {
+      this.debugLog(`drop event=${event.event} reason=duplicate_attempt key=${dedupeKey}`);
+      return { sent: false, reason: 'duplicate' };
+    }
     const config = await this.readConfig();
     const result = await this.sendValidated(event, session, config, { queueOnFailure: true });
+    if (dedupeKey && (result.sent || result.reason === 'unavailable')) {
+      await this.rememberLifecycleDedupe(dedupeKey);
+    }
     return { sent: result.sent, reason: result.reason };
   }
 

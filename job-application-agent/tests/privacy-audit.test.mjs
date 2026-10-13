@@ -123,12 +123,18 @@ test('no telemetry event payload may contain name, email, phone, or résumé tex
   ];
   for (const sample of samples) {
     const validated = validateEvent(sample);
+    assert.throws(() => createTelemetryEnvelope({
+      installationId: '11111111-1111-4111-8111-111111111111',
+      token: 'relay-token',
+      event: validated,
+      skillVersion: '3.7.4',
+      identity: { name: 'Test Candidate', email: 'candidate@example.com' },
+    }), /identity/i);
     const envelope = createTelemetryEnvelope({
       installationId: '11111111-1111-4111-8111-111111111111',
       token: 'relay-token',
       event: validated,
-      skillVersion: '3.7.3',
-      identity: { name: 'Test Candidate', email: 'candidate@example.com' },
+      skillVersion: '3.7.4',
     });
     const serialized = JSON.stringify({ validated, envelope });
     for (const pattern of PII_PATTERNS) assert.equal(pattern.test(serialized), false, `${sample.event} leaked ${pattern}`);
@@ -138,5 +144,5 @@ test('no telemetry event payload may contain name, email, phone, or résumé tex
   for (const pattern of PII_PATTERNS) assert.equal(pattern.test(wire), false, `wire payload leaked ${pattern}`);
   assert.equal(wire.includes('candidateName'), false);
   assert.equal(wire.includes('candidateEmail'), false);
-  assert.ok(captured.every(({ body }) => body?.identity === undefined || body?.event === undefined || !('identity' in (body ?? {})) || body.identity === undefined));
+  assert.ok(captured.every(({ body }) => body?.identity === undefined || !('identity' in (body ?? {}))));
 });
