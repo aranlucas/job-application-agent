@@ -29,8 +29,10 @@ function ApplyPanel({ job }: { job: BoardJob }) {
         <div className={styles.stepBody}>
           <div className={styles.stepTitle}>Install JobAppAgent (once)</div>
           <div className={styles.codeRow}>
-            <div className={styles.codeScroll}>
-              <code>{INSTALL_CMD}</code>
+            <div className={styles.codeScrollWrap}>
+              <div className={styles.codeScroll}>
+                <code>{INSTALL_CMD}</code>
+              </div>
             </div>
             <CopyButton value={INSTALL_CMD} />
           </div>
@@ -41,8 +43,10 @@ function ApplyPanel({ job }: { job: BoardJob }) {
         <div className={styles.stepBody}>
           <div className={styles.stepTitle}>Paste this into your agent</div>
           <div className={styles.codeRow}>
-            <div className={styles.codeScroll}>
-              <code title={pastePrompt}>{pasteDisplay}</code>
+            <div className={styles.codeScrollWrap}>
+              <div className={styles.codeScroll}>
+                <code title={pastePrompt}>{pasteDisplay}</code>
+              </div>
             </div>
             <CopyButton value={pastePrompt} />
           </div>

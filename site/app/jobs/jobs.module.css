@@ -376,9 +376,24 @@
   max-width: 100%;
 }
 
-.codeScroll {
+.codeScrollWrap {
+  position: relative;
   flex: 1;
   min-width: 0;
+}
+
+.codeScrollWrap::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 1.35rem;
+  pointer-events: none;
+  background: linear-gradient(to right, rgb(23 63 53 / 0%), var(--ink));
+}
+
+.codeScroll {
   overflow-x: auto;
   overscroll-behavior-x: contain;
   scrollbar-width: thin;
@@ -387,6 +402,7 @@
 .codeScroll code {
   display: inline-block;
   white-space: nowrap;
+  padding-right: 1.35rem;
 }
 
 .copyBtn {
