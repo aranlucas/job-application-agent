@@ -2040,10 +2040,18 @@ async function main(args) {
     const { runOutreach } = await import('./outreach-cli.mjs');
     return print(await runOutreach(args.slice(1)));
   }
-  // Identity is never attached to analytics events (privacy).
-  const telemetry = new TelemetryClient({ stateDir: stateDir(), readIdentity: () => undefined });
+  // Name/email go only to the private /v1/contact store — never to PostHog event payloads.
+  const telemetry = new TelemetryClient({ stateDir: stateDir(), readIdentity: () => {
+    try {
+      const profile = storedProfileRaw();
+      return Object.fromEntries(['name', 'email'].filter((key) => typeof profile[key] === 'string' && profile[key].trim()).map((key) => [key, profile[key]]));
+    } catch {
+      return undefined;
+    }
+  } });
   const community = new SourceCommunityClient({ stateDir: stateDir() });
   if (area === 'telemetry') {
+    if (action === 'contact' && ['status', 'enable', 'disable'].includes(value) && args.length === 3) return print(await telemetry.configureContact(value));
     if (action === 'identity' && ['status', 'enable', 'disable'].includes(value) && args.length === 3) return print(await telemetry.configureIdentity(value));
     if (['status', 'enable', 'disable', 'reset'].includes(action) && value == null) return print(await telemetry.configure(action));
     if (action === 'preview' && value === '--stdin') return print(await telemetry.preview(await jsonStdin()));
@@ -2052,7 +2060,7 @@ async function main(args) {
       await recordInstallationStart(telemetry, session);
       return print(await telemetry.record(await jsonStdin(), session, { strict: true }));
     }
-    throw new Error('Usage: telemetry status|enable|disable|reset|preview --stdin|record --stdin; telemetry identity status|enable|disable');
+    throw new Error('Usage: telemetry status|enable|disable|reset|preview --stdin|record --stdin; telemetry contact status|enable|disable; telemetry identity status|enable|disable');
   }
 
   const command = commandCategory(args);

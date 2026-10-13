@@ -11,14 +11,41 @@ function env() {
   const contributorHashes = new Map();
   const communityJobs = new Map();
   const jobContributorHashes = new Map();
+  const installContacts = new Map();
   return {
     SIGNING_SECRET: 'test-signing-secret-with-sufficient-length',
     POSTHOG_PROJECT_TOKEN: 'phc_test',
     POSTHOG_HOST: 'https://us.i.posthog.com',
     INSTALL_RATE_LIMITER: { limit: async () => ({ success: true }) },
     EVENT_RATE_LIMITER: { limit: async () => ({ success: true }) },
+    CONTACT_RATE_LIMITER: { limit: async () => ({ success: true }) },
     SOURCE_RATE_LIMITER: { limit: async ({ key }) => { sourceRateLimitKeys.push(key); return { success: true }; } },
     SOURCE_READ_RATE_LIMITER: { limit: async ({ key }) => { sourceReadRateLimitKeys.push(key); return { success: true }; } },
+    PRIVATE_CONTACTS_DB: {
+      prepare(sql) {
+        return {
+          bind(...args) {
+            return {
+              async run() {
+                if (/INSERT INTO install_contacts/i.test(sql)) {
+                  const [installId, candidateName, candidateEmail, skillVersion, updatedAt, createdAt] = args;
+                  const existing = installContacts.get(installId);
+                  installContacts.set(installId, {
+                    installId,
+                    candidateName,
+                    candidateEmail,
+                    skillVersion,
+                    updatedAt,
+                    createdAt: existing?.createdAt ?? createdAt,
+                  });
+                }
+              },
+            };
+          },
+        };
+      },
+    },
+    installContacts,
     SOURCE_STORE: {
       async contribute(source, contributorHash) {
         const current = communitySources.get(source.sourceId) ?? {
@@ -486,4 +513,72 @@ test('PostHog failures return a retryable relay error without leaking details', 
   const response = await worker.fetch(new Request('https://relay.example.com/v1/events', { method: 'POST', body: JSON.stringify(payload) }), bindings);
   assert.equal(response.status, 503);
   assert.deepEqual(await response.json(), { error: 'upstream_unavailable' });
+});
+
+test('contact endpoint upserts privately and is not publicly readable', async () => {
+  const bindings = env();
+  bindings.PUBLIC_STATS_DB = {
+    prepare() {
+      return {
+        bind() { return this; },
+        async all() { return { results: [] }; },
+        async first() { return null; },
+        async run() { return { success: true }; },
+      };
+    },
+  };
+  const installationId = '11111111-1111-4111-8111-111111111111';
+  const token = await createToken(installationId, bindings.SIGNING_SECRET);
+  const payload = {
+    installId: installationId,
+    token,
+    candidateName: 'Test Candidate',
+    candidateEmail: 'candidate@example.com',
+    skillVersion: '3.7.3',
+    updatedAt: '2026-10-13T12:00:00.000Z',
+  };
+  const created = await worker.fetch(new Request('https://relay.example.com/v1/contact', { method: 'POST', body: JSON.stringify(payload) }), bindings);
+  assert.equal(created.status, 202);
+  assert.deepEqual(bindings.installContacts.get(installationId), {
+    installId: installationId,
+    candidateName: 'Test Candidate',
+    candidateEmail: 'candidate@example.com',
+    skillVersion: '3.7.3',
+    updatedAt: '2026-10-13T12:00:00.000Z',
+    createdAt: '2026-10-13T12:00:00.000Z',
+  });
+
+  const updated = await worker.fetch(new Request('https://relay.example.com/v1/contact', {
+    method: 'POST',
+    body: JSON.stringify({ ...payload, candidateEmail: 'new@example.com', updatedAt: '2026-10-13T13:00:00.000Z' }),
+  }), bindings);
+  assert.equal(updated.status, 202);
+  assert.equal(bindings.installContacts.get(installationId).candidateEmail, 'new@example.com');
+  assert.equal(bindings.installContacts.get(installationId).createdAt, '2026-10-13T12:00:00.000Z');
+
+  assert.equal((await worker.fetch(new Request('https://relay.example.com/v1/contact'), bindings)).status, 404);
+  assert.equal((await worker.fetch(new Request('https://relay.example.com/v1/contact', { method: 'GET' }), bindings)).status, 404);
+
+  const jobs = await worker.fetch(new Request('https://relay.example.com/v1/jobs'), bindings);
+  assert.equal(jobs.status, 200);
+  const jobsBody = JSON.stringify(await jobs.json());
+  assert.equal(jobsBody.includes('candidate@example.com'), false);
+  assert.equal(jobsBody.includes('Test Candidate'), false);
+  assert.equal(jobsBody.includes('install_contacts'), false);
+
+  const publicStats = await worker.fetch(new Request('https://relay.example.com/api/public-stats'), bindings);
+  assert.equal(publicStats.status, 200);
+  const publicStatsBody = JSON.stringify(await publicStats.json());
+  assert.equal(publicStatsBody.includes('candidate@example.com'), false);
+  assert.equal(publicStatsBody.includes('Test Candidate'), false);
+  assert.equal(publicStatsBody.includes('install_contacts'), false);
+
+  assert.equal((await worker.fetch(new Request('https://relay.example.com/v1/contact', {
+    method: 'POST',
+    body: JSON.stringify({ ...payload, candidateEmail: 'not-an-email' }),
+  }), bindings)).status, 400);
+  assert.equal((await worker.fetch(new Request('https://relay.example.com/v1/contact', {
+    method: 'POST',
+    body: JSON.stringify({ ...payload, token: 'bad-token' }),
+  }), bindings)).status, 401);
 });

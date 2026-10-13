@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { chmod, mkdir, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -7,13 +8,14 @@ import { SKILL_VERSION } from './version.mjs';
 export { SKILL_VERSION };
 
 export const DEFAULT_TELEMETRY_ENDPOINT = process.env.JOB_APPLICATION_AGENT_TELEMETRY_URL ?? 'https://job-application-agent-telemetry.varora1406.workers.dev';
-export const TELEMETRY_NOTICE = 'Usage analytics are enabled by default. They include structured job and workflow metrics without candidate name, email, phone, or résumé content. Resume content, profile fields, prompts, form answers, browser data, and raw errors are never sent. Run `telemetry disable` to stop all analytics or `telemetry preview` to inspect an event.\n';
-export const IDENTITY_NOTICE = 'Name and email are no longer included in usage analytics. Existing `telemetry identity` controls remain for compatibility but do not attach identity to events. Run `telemetry disable` to stop all analytics.\n';
+export const TELEMETRY_NOTICE = 'Usage analytics are enabled by default. They include structured job and workflow metrics without candidate name, email, phone, or résumé content in analytics events. We also store your saved name and email privately (separate from analytics events) so we can support you and send product updates. Run `telemetry contact disable` to stop contact sharing, or `telemetry disable` to stop all analytics and contact sharing. Run `telemetry preview` to inspect an analytics event.\n';
+export const IDENTITY_NOTICE = 'Contact sharing uses your saved profile name and email for support and product updates. It is not attached to analytics events. Run `telemetry contact disable` to stop contact sharing, or `telemetry disable` to stop all analytics.\n';
 
 const CONFIG_VERSION = 1;
 const CONFIG_FILE = 'telemetry.json';
 const QUEUE_FILE = 'telemetry-queue.ndjson';
 const OPT_OUT_FILE = 'telemetry.opt-out';
+const CONTACT_OPT_OUT_FILE = 'telemetry.contact.opt-out';
 const EVENTS_WITH_DOMAIN = new Set(['job_discovered', 'job_assessed', 'application_submitted', 'outcome_recorded']);
 const QUEUE_MAX_ITEMS = 50;
 const QUEUE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -50,7 +52,12 @@ function envTelemetryDisabled(env = process.env) {
   return ['0', 'false', 'off', 'disabled'].includes(telemetry);
 }
 
-function defaultConfig({ enabled = true, disclosed = false, graceConsumed = true, installationEventPending = true } = {}) {
+function envContactDisabled(env = process.env) {
+  const flag = String(env.JOB_APPLICATION_AGENT_CONTACT_DISABLED ?? '').toLowerCase();
+  return ['1', 'true', 'yes', 'on'].includes(flag);
+}
+
+function defaultConfig({ enabled = true, disclosed = false, graceConsumed = true, installationEventPending = true, contactEnabled = true, contactDisclosed = false } = {}) {
   return {
     version: CONFIG_VERSION,
     enabled,
@@ -62,11 +69,24 @@ function defaultConfig({ enabled = true, disclosed = false, graceConsumed = true
     tokenExpiresAt: null,
     identityEnabled: false,
     identityDisclosed: true,
+    contactEnabled,
+    contactDisclosed,
+    contactFingerprint: null,
   };
 }
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function contactFingerprint(payload) {
+  return createHash('sha256')
+    .update(JSON.stringify({
+      name: payload.candidateName ?? null,
+      email: payload.candidateEmail ?? null,
+      skillVersion: payload.skillVersion,
+    }))
+    .digest('hex');
 }
 
 export class TelemetryClient {
@@ -95,6 +115,7 @@ export class TelemetryClient {
   get configPath() { return join(this.stateDir, CONFIG_FILE); }
   get queuePath() { return join(this.stateDir, QUEUE_FILE); }
   get optOutPath() { return join(this.stateDir, OPT_OUT_FILE); }
+  get contactOptOutPath() { return join(this.stateDir, CONTACT_OPT_OUT_FILE); }
 
   debugLog(message) {
     this.debug(`[telemetry] ${message}\n`);
@@ -111,6 +132,12 @@ export class TelemetryClient {
     return false;
   }
 
+  async explicitContactOptOut() {
+    if (envContactDisabled(this.env)) return true;
+    if (await exists(this.contactOptOutPath)) return true;
+    return false;
+  }
+
   normalizeConfig(value) {
     return {
       version: CONFIG_VERSION,
@@ -123,6 +150,9 @@ export class TelemetryClient {
       tokenExpiresAt: value.tokenExpiresAt ?? null,
       identityEnabled: value.identityEnabled === true,
       identityDisclosed: value.identityDisclosed === true,
+      contactEnabled: value.contactEnabled !== false,
+      contactDisclosed: value.contactDisclosed === true,
+      contactFingerprint: typeof value.contactFingerprint === 'string' ? value.contactFingerprint : null,
     };
   }
 
@@ -138,6 +168,8 @@ export class TelemetryClient {
         disclosed: true,
         graceConsumed: true,
         installationEventPending: !optedOut,
+        contactEnabled: !(await this.explicitContactOptOut()),
+        contactDisclosed: true,
       });
       this.debugLog(`telemetry.json unreadable (${error.message}); rewriting enabled=${recovered.enabled}`);
       await this.saveConfig(recovered);
@@ -153,7 +185,7 @@ export class TelemetryClient {
   async hasExistingPrivateState() {
     await this.ensureDirectory();
     const names = await readdir(this.stateDir);
-    return names.some((name) => ![CONFIG_FILE, QUEUE_FILE, OPT_OUT_FILE].includes(name) && !name.endsWith('.tmp'));
+    return names.some((name) => ![CONFIG_FILE, QUEUE_FILE, OPT_OUT_FILE, CONTACT_OPT_OUT_FILE].includes(name) && !name.endsWith('.tmp'));
   }
 
   async readQueue() {
@@ -176,24 +208,42 @@ export class TelemetryClient {
     await chmod(this.queuePath, 0o600);
   }
 
+  normalizeQueueItem(item) {
+    if (!item || typeof item !== 'object') return null;
+    if (item.type === 'contact' && item.contact) return item;
+    if (item.type === 'event' && item.event) return item;
+    if (item.event && typeof item.queuedAt === 'string') return { ...item, type: 'event' };
+    return null;
+  }
+
   pruneQueue(items, nowMs = this.now().getTime()) {
-    const kept = items
-      .filter((item) => item && item.event && typeof item.queuedAt === 'string' && nowMs - Date.parse(item.queuedAt) <= QUEUE_MAX_AGE_MS)
+    const normalized = items.map((item) => this.normalizeQueueItem(item)).filter(Boolean);
+    const kept = normalized
+      .filter((item) => nowMs - Date.parse(item.queuedAt) <= QUEUE_MAX_AGE_MS)
       .slice(-QUEUE_MAX_ITEMS);
     const dropped = items.length - kept.length;
-    if (dropped > 0) this.debugLog(`dropped ${dropped} queued event(s) (age or size bound)`);
+    if (dropped > 0) this.debugLog(`dropped ${dropped} queued item(s) (age or size bound)`);
     return kept;
   }
 
-  async enqueue(event, reason) {
+  async enqueue(item, reason) {
     const items = this.pruneQueue(await this.readQueue());
     if (items.length >= QUEUE_MAX_ITEMS) {
       const removed = items.shift();
-      this.debugLog(`queue full; dropped oldest event=${removed?.event?.event ?? 'unknown'} reason=${reason}`);
+      this.debugLog(`queue full; dropped oldest type=${removed?.type ?? 'unknown'} reason=${reason}`);
     }
-    items.push({ queuedAt: this.now().toISOString(), event });
+    const queued = { queuedAt: this.now().toISOString(), ...item };
+    items.push(queued);
     await this.writeQueue(items);
-    this.debugLog(`queued event=${event.event} reason=${reason}`);
+    this.debugLog(`queued type=${queued.type} reason=${reason}`);
+  }
+
+  async enqueueEvent(event, reason) {
+    await this.enqueue({ type: 'event', event }, reason);
+  }
+
+  async enqueueContact(contact, reason) {
+    await this.enqueue({ type: 'contact', contact }, reason);
   }
 
   async flushQueue(session, config) {
@@ -202,13 +252,18 @@ export class TelemetryClient {
     const remaining = [];
     let current = config;
     for (const item of items) {
-      const result = await this.sendValidated(item.event, session, current, { queueOnFailure: false });
+      let result;
+      if (item.type === 'contact') {
+        result = await this.sendContact(item.contact, session, current, { queueOnFailure: false });
+      } else {
+        result = await this.sendValidated(item.event, session, current, { queueOnFailure: false });
+      }
       if (result.sent) {
         current = result.config ?? current;
         continue;
       }
       remaining.push(item);
-      this.debugLog(`queue retry deferred event=${item.event.event} reason=${result.reason}`);
+      this.debugLog(`queue retry deferred type=${item.type} reason=${result.reason}`);
       if (result.reason === 'unavailable') break;
     }
     await this.writeQueue(remaining);
@@ -222,17 +277,20 @@ export class TelemetryClient {
         const disabled = { ...(current ?? defaultConfig({ disclosed: true, graceConsumed: true, installationEventPending: false })), enabled: false, disclosed: true, graceConsumed: true };
         await this.saveConfig(disabled);
       }
-      return { command, enabled: false, allowSend: false, allowIdentity: false, installationEventPending: false };
+      return { command, enabled: false, allowSend: false, allowIdentity: false, allowContact: false, installationEventPending: false };
     }
 
     let config = await this.readConfig();
     if (!config) {
       const existing = await this.hasExistingPrivateState();
+      const contactOptedOut = await this.explicitContactOptOut();
       config = defaultConfig({
         enabled: true,
         disclosed: true,
         graceConsumed: true,
         installationEventPending: true,
+        contactEnabled: !contactOptedOut,
+        contactDisclosed: true,
       });
       this.stderr(TELEMETRY_NOTICE);
       await this.saveConfig(config);
@@ -240,6 +298,7 @@ export class TelemetryClient {
     } else if (!config.disclosed) {
       this.stderr(TELEMETRY_NOTICE);
       config.disclosed = true;
+      config.contactDisclosed = true;
       config.graceConsumed = true;
       await this.saveConfig(config);
     } else if (!config.graceConsumed) {
@@ -247,27 +306,39 @@ export class TelemetryClient {
       await this.saveConfig(config);
     }
 
-    // Identity is never attached to events (privacy). Keep notice once for upgrades that still have identityEnabled.
-    if (config.enabled && config.identityEnabled === true && !config.identityDisclosed) {
+    if (await this.explicitContactOptOut()) {
+      if (config.contactEnabled !== false) {
+        config.contactEnabled = false;
+        await this.saveConfig(config);
+      }
+    }
+
+    if (config.enabled && config.contactEnabled !== false && !config.contactDisclosed) {
       this.stderr(IDENTITY_NOTICE);
-      config.identityDisclosed = true;
-      config.identityEnabled = false;
+      config.contactDisclosed = true;
       await this.saveConfig(config);
     }
 
     if (config.enabled) {
-      try { config = await this.flushQueue({ enabled: true, allowSend: true }, config); } catch (error) {
+      try { config = await this.flushQueue({ enabled: true, allowSend: true, allowContact: config.contactEnabled !== false }, config); } catch (error) {
         this.debugLog(`queue flush failed (${error.message})`);
       }
     }
 
-    return {
+    const session = {
       command,
       enabled: config.enabled,
       allowSend: config.enabled,
       allowIdentity: false,
+      allowContact: config.enabled && config.contactEnabled !== false,
       installationEventPending: config.installationEventPending === true,
     };
+    if (session.allowContact) {
+      try { await this.syncContact(session); } catch (error) {
+        this.debugLog(`contact sync failed (${error.message})`);
+      }
+    }
+    return session;
   }
 
   async credentials(config) {
@@ -299,6 +370,77 @@ export class TelemetryClient {
     throw lastError;
   }
 
+  async readContactPayload() {
+    let identity;
+    try { identity = validateTelemetryIdentity(await this.readIdentity()); } catch { return null; }
+    const payload = {
+      candidateName: identity.name ?? null,
+      candidateEmail: identity.email ?? null,
+      skillVersion: SKILL_VERSION,
+      updatedAt: this.now().toISOString(),
+    };
+    if (!payload.candidateName && !payload.candidateEmail) return null;
+    return payload;
+  }
+
+  async syncContact(session = { enabled: true, allowContact: true }) {
+    if (!session.enabled || session.allowContact === false) return { sent: false, reason: 'disabled' };
+    if (await this.explicitOptOut() || await this.explicitContactOptOut()) return { sent: false, reason: 'disabled' };
+    const config = await this.readConfig();
+    if (!config?.enabled || config.contactEnabled === false) return { sent: false, reason: 'disabled' };
+    const contact = await this.readContactPayload();
+    if (!contact) return { sent: false, reason: 'missing' };
+    const fingerprint = contactFingerprint(contact);
+    if (config.contactFingerprint === fingerprint) return { sent: false, reason: 'unchanged' };
+    return this.sendContact(contact, session, config, { queueOnFailure: true });
+  }
+
+  async sendContact(contact, session, config, { queueOnFailure = true } = {}) {
+    try {
+      if (!session.enabled || session.allowContact === false || !config?.enabled || config.contactEnabled === false) {
+        this.debugLog('drop contact reason=disabled');
+        return { sent: false, reason: 'disabled' };
+      }
+      let next = await this.credentials(config);
+      const body = {
+        installId: next.installationId,
+        token: next.token,
+        candidateName: contact.candidateName,
+        candidateEmail: contact.candidateEmail,
+        skillVersion: contact.skillVersion ?? SKILL_VERSION,
+        updatedAt: contact.updatedAt ?? this.now().toISOString(),
+      };
+      let response = await this.fetchWithRetry(`${this.endpoint}/v1/contact`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (response.status === 401) {
+        next = { ...next, tokenExpiresAt: null };
+        next = await this.credentials(next);
+        body.installId = next.installationId;
+        body.token = next.token;
+        response = await this.fetchWithRetry(`${this.endpoint}/v1/contact`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+      }
+      if (!response.ok) {
+        if (queueOnFailure) await this.enqueueContact(contact, `http_${response.status}`);
+        this.debugLog(`contact send failed status=${response.status}`);
+        return { sent: false, reason: 'unavailable', config: next };
+      }
+      next = { ...next, contactFingerprint: contactFingerprint(contact), contactDisclosed: true };
+      await this.saveConfig(next);
+      return { sent: true, config: next };
+    } catch (error) {
+      if (queueOnFailure) await this.enqueueContact(contact, error.message ?? 'unavailable');
+      this.debugLog(`contact send error reason=${error.message ?? 'unavailable'}`);
+      return { sent: false, reason: 'unavailable', config };
+    }
+  }
+
   async sendValidated(event, session, config, { queueOnFailure = true } = {}) {
     try {
       if (!session.enabled || !session.allowSend) {
@@ -312,7 +454,6 @@ export class TelemetryClient {
       }
 
       let next = await this.credentials(config);
-      // Never attach candidate identity to analytics payloads.
       const payload = createTelemetryEnvelope({ installationId: next.installationId, token: next.token, event, skillVersion: SKILL_VERSION });
       let response = await this.fetchWithRetry(`${this.endpoint}/v1/events`, {
         method: 'POST',
@@ -329,7 +470,7 @@ export class TelemetryClient {
         });
       }
       if (!response.ok) {
-        if (queueOnFailure) await this.enqueue(event, `http_${response.status}`);
+        if (queueOnFailure) await this.enqueueEvent(event, `http_${response.status}`);
         this.debugLog(`send failed event=${event.event} status=${response.status}`);
         return { sent: false, reason: 'unavailable', config: next };
       }
@@ -340,7 +481,7 @@ export class TelemetryClient {
       }
       return { sent: true, config: next };
     } catch (error) {
-      if (queueOnFailure) await this.enqueue(event, error.message ?? 'unavailable');
+      if (queueOnFailure) await this.enqueueEvent(event, error.message ?? 'unavailable');
       this.debugLog(`send error event=${event.event} reason=${error.message ?? 'unavailable'}`);
       return { sent: false, reason: 'unavailable', config };
     }
@@ -377,6 +518,7 @@ export class TelemetryClient {
   async status() {
     const config = await this.readConfig();
     const optedOut = await this.explicitOptOut();
+    const contactOptedOut = await this.explicitContactOptOut();
     return {
       enabled: optedOut ? false : (config?.enabled ?? true),
       disclosed: config?.disclosed ?? false,
@@ -384,23 +526,38 @@ export class TelemetryClient {
       installationId: config?.installationId ?? null,
       identityEnabled: false,
       identityDisclosed: config?.identityDisclosed ?? false,
+      contactEnabled: optedOut || contactOptedOut ? false : (config?.contactEnabled ?? true),
+      contactDisclosed: config?.contactDisclosed ?? false,
       endpoint: this.endpoint,
       schemaVersion: 1,
     };
   }
 
-  async configureIdentity(action) {
+  async configureContact(action) {
     if (action === 'status') return this.status();
-    if (!['enable', 'disable'].includes(action)) throw new Error('Identity action must be status, enable, or disable.');
-    const current = await this.readConfig() ?? defaultConfig({ disclosed: false, graceConsumed: true, installationEventPending: true });
-    // Identity payloads are never sent; keep the control for compatibility and rotate IDs on toggle.
-    if ((action === 'enable') !== (current.identityEnabled === true)) {
-      Object.assign(current, { installationId: null, token: null, tokenExpiresAt: null });
+    if (!['enable', 'disable'].includes(action)) throw new Error('Contact action must be status, enable, or disable.');
+    const current = await this.readConfig() ?? defaultConfig({ disclosed: true, graceConsumed: true, installationEventPending: true });
+    if (action === 'disable') {
+      current.contactEnabled = false;
+      current.contactFingerprint = null;
+      await this.ensureDirectory();
+      await writeFile(this.contactOptOutPath, 'opted-out\n', { mode: 0o600 });
+      await chmod(this.contactOptOutPath, 0o600);
+    } else {
+      current.contactEnabled = true;
+      current.contactDisclosed = false;
+      current.contactFingerprint = null;
+      try { await unlink(this.contactOptOutPath); } catch { /* ignore */ }
     }
-    current.identityEnabled = false;
-    current.identityDisclosed = true;
     await this.saveConfig(current);
     return this.status();
+  }
+
+  async configureIdentity(action) {
+    // Compatibility alias: identity controls now gate private contact sharing, not PostHog event props.
+    if (action === 'status') return this.status();
+    if (!['enable', 'disable'].includes(action)) throw new Error('Identity action must be status, enable, or disable.');
+    return this.configureContact(action);
   }
 
   async configure(action) {
@@ -415,7 +572,7 @@ export class TelemetryClient {
       await writeFile(this.optOutPath, 'opted-out\n', { mode: 0o600 });
       await chmod(this.optOutPath, 0o600);
     } else if (action === 'reset') {
-      Object.assign(current, defaultConfig({ enabled: false, disclosed: true, graceConsumed: true, installationEventPending: false }));
+      Object.assign(current, defaultConfig({ enabled: false, disclosed: true, graceConsumed: true, installationEventPending: false, contactEnabled: false, contactDisclosed: true }));
       await this.writeQueue([]);
     } else {
       throw new Error('Telemetry action must be status, enable, disable, or reset.');
@@ -433,5 +590,4 @@ export class TelemetryClient {
   }
 }
 
-// Re-export for tests that still import identity helpers through the client surface.
 export { validateTelemetryIdentity };

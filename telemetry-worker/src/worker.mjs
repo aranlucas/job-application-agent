@@ -132,6 +132,81 @@ async function events(request, env) {
   return response({ accepted: true, eventId }, 202);
 }
 
+const CONTACT_MAX_BYTES = 2048;
+const CONTACT_NAME_MAX = 160;
+const CONTACT_EMAIL_MAX = 254;
+const CONTACT_VERSION = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
+
+function normalizeContactField(value, label, max) {
+  if (value == null) return null;
+  if (typeof value !== 'string' || !value.trim() || value.length > max || /[\x00-\x1f\x7f]/.test(value)) {
+    throw Object.assign(new Error(`Invalid ${label}.`), { status: 400 });
+  }
+  return value.trim();
+}
+
+async function upsertInstallContact(database, row) {
+  if (!database?.prepare) throw Object.assign(new Error('Private contacts store unavailable.'), { status: 503 });
+  await database.prepare(`
+    INSERT INTO install_contacts (install_id, candidate_name, candidate_email, skill_version, updated_at, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(install_id) DO UPDATE SET
+      candidate_name = excluded.candidate_name,
+      candidate_email = excluded.candidate_email,
+      skill_version = excluded.skill_version,
+      updated_at = excluded.updated_at
+  `).bind(row.installId, row.candidateName, row.candidateEmail, row.skillVersion, row.updatedAt, row.createdAt).run();
+}
+
+async function contact(request, env) {
+  const input = await readJson(request, CONTACT_MAX_BYTES);
+  const allowedKeys = new Set(['installId', 'installationId', 'token', 'candidateName', 'candidateEmail', 'skillVersion', 'updatedAt']);
+  for (const key of Object.keys(input)) if (!allowedKeys.has(key)) return response({ error: 'invalid_contact' }, 400);
+
+  const installId = input.installId ?? input.installationId;
+  if (!UUID.test(String(installId ?? ''))) return response({ error: 'invalid_contact' }, 400);
+  if (typeof input.token !== 'string' || input.token.length < 8) return response({ error: 'invalid_token' }, 401);
+
+  let identity;
+  try { identity = await verifyToken(input.token, env.SIGNING_SECRET); } catch (error) {
+    return response({ error: /expired/i.test(error.message) ? 'token_expired' : 'invalid_token' }, 401);
+  }
+  if (identity.installationId !== installId) return response({ error: 'invalid_token' }, 401);
+  if (!await allowed(env.CONTACT_RATE_LIMITER, installId)) return response({ error: 'rate_limited' }, 429);
+
+  let candidateName;
+  let candidateEmail;
+  try {
+    candidateName = normalizeContactField(input.candidateName, 'candidateName', CONTACT_NAME_MAX);
+    candidateEmail = normalizeContactField(input.candidateEmail, 'candidateEmail', CONTACT_EMAIL_MAX);
+  } catch (error) {
+    return response({ error: 'invalid_contact' }, error.status ?? 400);
+  }
+  if (!candidateName && !candidateEmail) return response({ error: 'invalid_contact' }, 400);
+  if (candidateEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(candidateEmail)) return response({ error: 'invalid_contact' }, 400);
+  if (typeof input.skillVersion !== 'string' || !CONTACT_VERSION.test(input.skillVersion)) return response({ error: 'invalid_contact' }, 400);
+
+  const updatedAt = typeof input.updatedAt === 'string' && !Number.isNaN(Date.parse(input.updatedAt))
+    ? new Date(input.updatedAt).toISOString()
+    : new Date().toISOString();
+  const createdAt = updatedAt;
+
+  try {
+    await upsertInstallContact(env.PRIVATE_CONTACTS_DB, {
+      installId,
+      candidateName,
+      candidateEmail,
+      skillVersion: input.skillVersion,
+      updatedAt,
+      createdAt,
+    });
+  } catch (error) {
+    if (error.status === 503) return response({ error: 'store_unavailable' }, 503);
+    return response({ error: 'store_unavailable' }, 503);
+  }
+  return response({ accepted: true, installId }, 202);
+}
+
 function sourceStore(env) {
   if (env.SOURCE_STORE) return env.SOURCE_STORE;
   const database = env.PUBLIC_STATS_DB;
@@ -338,6 +413,8 @@ export async function handleRequest(request, env) {
   if (pathname === '/api/public-stats') return publicStatsResponse(request, env);
   if (request.method === 'POST' && pathname === '/v1/install') return install(request, env);
   if (request.method === 'POST' && pathname === '/v1/events') return events(request, env);
+  if (request.method === 'POST' && pathname === '/v1/contact') return contact(request, env);
+  // Intentionally no GET /v1/contact — private contacts are owner-only via D1.
   if (request.method === 'POST' && pathname === '/v1/sources') return contributeSource(request, env);
   if (request.method === 'GET' && pathname === '/v1/sources') return listSources(request, env);
   if (request.method === 'POST' && pathname === '/v1/jobs') return contributeJob(request, env);

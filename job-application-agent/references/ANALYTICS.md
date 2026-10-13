@@ -4,12 +4,17 @@ Job Application Agent includes default-enabled, opt-out usage analytics. The pur
 
 The first eligible command displays a disclosure and may send that command's events immediately (including upgrades that previously had private state but no `telemetry.json`). Telemetry stays on unless the candidate has explicitly opted out via `telemetry disable`, a `telemetry.opt-out` file in the state directory, or `JOB_APPLICATION_AGENT_TELEMETRY_DISABLED=1` / `JOB_APPLICATION_AGENT_TELEMETRY=0`.
 
-Candidate name, email, phone, and résumé content are never included in analytics events.
+Candidate name, email, phone, and résumé content are never included in analytics / PostHog event payloads.
+
+Separately, the CLI may upsert the saved profile name and email into a private maintainer contact store (`POST /v1/contact`) once per install and again only when the value changes. Contact sharing is skipped when telemetry is opted out, and has its own opt-out (`telemetry contact disable`, `telemetry.contact.opt-out`, or `JOB_APPLICATION_AGENT_CONTACT_DISABLED=1`).
 
 ## Controls
 
 ```text
 node scripts/job-application.mjs telemetry status
+node scripts/job-application.mjs telemetry contact status
+node scripts/job-application.mjs telemetry contact disable
+node scripts/job-application.mjs telemetry contact enable
 node scripts/job-application.mjs telemetry identity status
 node scripts/job-application.mjs telemetry identity disable
 node scripts/job-application.mjs telemetry identity enable
@@ -20,10 +25,11 @@ node scripts/job-application.mjs telemetry preview --stdin
 node scripts/job-application.mjs telemetry record --stdin
 ```
 
-- `identity disable` / `identity enable` remain for compatibility. Identity payloads are never attached to events.
-- `status` and `identity status` show the UUID and sharing/disclosure flags, never candidate name/email or relay tokens. They send nothing.
-- `disable` stops all future analytics collection while preserving the installation ID, and writes an explicit opt-out marker.
-- `enable` resumes collection with the same installation ID and clears the opt-out marker.
+- `contact disable` / `contact enable` control the private contact store only. Contact payloads are never attached to PostHog events.
+- `identity disable` / `identity enable` are compatibility aliases for the contact controls.
+- `status`, `contact status`, and `identity status` show the UUID and sharing/disclosure flags, never candidate name/email or relay tokens. They send nothing.
+- `disable` stops all future analytics collection and contact sharing while preserving the installation ID, and writes an explicit opt-out marker.
+- `enable` resumes collection with the same installation ID and clears the telemetry opt-out marker.
 - `reset` disables collection and removes the anonymous ID, relay token, and queued events. Enabling later creates a new identity.
 - `preview` validates and shows structured event properties without transmitting them.
 - `record` rejects undocumented events and properties; browser workflows use it for started, step, pause, skip, and round events. Confirmed submissions are emitted by `ledger add` and must not be recorded twice. Score decisions `skip`/`exclude` emit `application_skipped`.
@@ -36,7 +42,9 @@ Community sharing is a separate default-enabled feature with independent `source
 
 ## Identity boundary
 
-Analytics never includes candidate name, email, phone, exact address, profile URLs, candidate location, work authorization, personal compensation or compensation floor, target profile or thresholds, resume or attachments, must-have evidence or coverage details, rejection reasons, prompts, responses, job descriptions, form questions, drafted answers, notes, passwords, MFA, CAPTCHA, legal or demographic answers, browser data, IP address, request headers, user agent, or raw error messages.
+Analytics / PostHog events never include candidate name, email, phone, exact address, profile URLs, candidate location, work authorization, personal compensation or compensation floor, target profile or thresholds, resume or attachments, must-have evidence or coverage details, rejection reasons, prompts, responses, job descriptions, form questions, drafted answers, notes, passwords, MFA, CAPTCHA, legal or demographic answers, browser data, IP address, request headers, user agent, or raw error messages.
+
+The private contact endpoint may store only the explicitly saved profile `name` and `email` (plus install ID, skill version, and timestamps) in `PRIVATE_CONTACTS_DB.install_contacts`. That table is never read by `/v1/jobs`, `/api/public-stats`, or other public routes.
 
 Optional `skill_error` fields may include a short `sanitizedMessage` and `fieldLabel` after stripping emails, phones, query-bearing URLs, and secrets. They never include résumé text or free-form candidate answers.
 

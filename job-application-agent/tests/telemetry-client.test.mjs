@@ -6,12 +6,20 @@ import test from 'node:test';
 
 import { prepareTelemetryInput, TelemetryClient } from '../scripts/telemetry-client.mjs';
 
-function fakeRelay({ failTimes = 0 } = {}) {
+function fakeRelay({ failTimes = 0, failContactTimes = 0 } = {}) {
   const requests = [];
   let failures = failTimes;
+  let contactFailures = failContactTimes;
   const fetch = async (url, options = {}) => {
     requests.push({ url, options, body: options.body ? JSON.parse(options.body) : null });
     if (url.endsWith('/v1/install')) return Response.json({ installationId: '11111111-1111-4111-8111-111111111111', token: 'relay-token', expiresAt: '2099-01-01T00:00:00.000Z' });
+    if (url.endsWith('/v1/contact')) {
+      if (contactFailures > 0) {
+        contactFailures -= 1;
+        throw new Error('offline');
+      }
+      return Response.json({ accepted: true, installId: '11111111-1111-4111-8111-111111111111' }, { status: 202 });
+    }
     if (failures > 0) {
       failures -= 1;
       throw new Error('offline');
@@ -19,6 +27,14 @@ function fakeRelay({ failTimes = 0 } = {}) {
     return Response.json({ accepted: true, eventId: '22222222-2222-4222-8222-222222222222' }, { status: 202 });
   };
   return { requests, fetch };
+}
+
+function eventBodies(relay) {
+  return relay.requests.filter((request) => String(request.url).endsWith('/v1/events')).map((request) => request.body);
+}
+
+function contactBodies(relay) {
+  return relay.requests.filter((request) => String(request.url).endsWith('/v1/contact')).map((request) => request.body);
 }
 
 test('new installations disclose and send the first event immediately', async (t) => {
@@ -142,7 +158,7 @@ test('failed sends are queued and retried on the next command without marking th
   await client.beginCommand('apply');
   const queue = await readFile(join(directory, 'telemetry-queue.ndjson'), 'utf8').catch(() => '');
   assert.equal(queue.trim(), '');
-  assert.ok(logs.some((line) => /queued event=application_paused/i.test(line)));
+  assert.ok(logs.some((line) => /queued type=event reason=/i.test(line)));
 });
 
 test('preview validates but never transmits and network failures never escape', async (t) => {
@@ -203,24 +219,99 @@ test('candidate identity is never attached to analytics events', async (t) => {
   });
   await client.record(usageEvent, await client.beginCommand('profile'));
   await client.record(usageEvent, await client.beginCommand('profile'));
-  assert.ok(relay.requests.every((request) => request.body?.identity === undefined));
-  assert.equal(JSON.stringify(relay.requests).includes('candidate@example.com'), false);
-  assert.equal(JSON.stringify(relay.requests).includes('Test Candidate'), false);
+  const events = eventBodies(relay);
+  assert.ok(events.length >= 2);
+  assert.ok(events.every((body) => body.identity === undefined));
+  assert.equal(JSON.stringify(events).includes('candidate@example.com'), false);
+  assert.equal(JSON.stringify(events).includes('Test Candidate'), false);
+  assert.equal(JSON.stringify(events).includes('candidateName'), false);
   assert.equal((await client.status()).identityEnabled, false);
 });
 
-test('identity controls remain available but never enable identity payloads', async (t) => {
+test('private contact syncs once per install and again only when the value changes', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'telemetry-contact-sync-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const relay = fakeRelay();
+  let notice = '';
+  let identity = { name: 'Test Candidate', email: 'candidate@example.com' };
+  const client = new TelemetryClient({
+    stateDir: directory,
+    fetch: relay.fetch,
+    stderr: (value) => { notice += value; },
+    readIdentity: () => identity,
+  });
+  await client.beginCommand('profile');
+  assert.match(notice, /store your saved name and email privately/i);
+  assert.match(notice, /telemetry contact disable/i);
+  assert.equal(contactBodies(relay).length, 1);
+  assert.deepEqual(contactBodies(relay)[0].candidateName, 'Test Candidate');
+  assert.deepEqual(contactBodies(relay)[0].candidateEmail, 'candidate@example.com');
+  assert.equal(contactBodies(relay)[0].installId, '11111111-1111-4111-8111-111111111111');
+  await client.beginCommand('profile');
+  assert.equal(contactBodies(relay).length, 1);
+  identity = { name: 'Test Candidate', email: 'new@example.com' };
+  await client.beginCommand('profile');
+  assert.equal(contactBodies(relay).length, 2);
+  assert.equal(contactBodies(relay)[1].candidateEmail, 'new@example.com');
+});
+
+test('contact opt-out and telemetry disable both stop contact sharing', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'telemetry-contact-optout-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const relay = fakeRelay();
+  const client = new TelemetryClient({
+    stateDir: directory,
+    fetch: relay.fetch,
+    stderr: () => {},
+    readIdentity: () => ({ name: 'Test Candidate', email: 'candidate@example.com' }),
+  });
+  await client.beginCommand('profile');
+  assert.equal(contactBodies(relay).length, 1);
+  assert.equal((await client.configureContact('disable')).contactEnabled, false);
+  await client.beginCommand('profile');
+  assert.equal(contactBodies(relay).length, 1);
+  await client.configureContact('enable');
+  await client.configure('disable');
+  await client.beginCommand('profile');
+  assert.equal(contactBodies(relay).length, 1);
+});
+
+test('failed contact sends are queued and retried on the next command', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'telemetry-contact-queue-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const relay = fakeRelay({ failContactTimes: 3 });
+  const client = new TelemetryClient({
+    stateDir: directory,
+    fetch: relay.fetch,
+    stderr: () => {},
+    timeoutMs: 20,
+    readIdentity: () => ({ name: 'Test Candidate', email: 'candidate@example.com' }),
+  });
+  await client.beginCommand('profile');
+  // fetchWithRetry spends the three offline failures; the contact is queued, not accepted.
+  assert.equal(contactBodies(relay).length, 3);
+  const queued = await readFile(join(directory, 'telemetry-queue.ndjson'), 'utf8');
+  assert.match(queued, /"type":"contact"/);
+  await client.beginCommand('profile');
+  assert.equal(contactBodies(relay).length, 4);
+  const drained = await readFile(join(directory, 'telemetry-queue.ndjson'), 'utf8').catch(() => '');
+  assert.equal(drained.trim(), '');
+});
+
+test('identity controls remain available as contact aliases and never attach event identity', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'telemetry-identity-control-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const relay = fakeRelay();
   const client = new TelemetryClient({ stateDir: directory, fetch: relay.fetch, stderr: () => {}, readIdentity: () => ({ name: 'Test Candidate', email: 'candidate@example.com' }) });
   await client.beginCommand('profile');
   const status = await client.configureIdentity('disable');
+  assert.equal(status.contactEnabled, false);
   assert.equal(status.identityEnabled, false);
   await client.record(usageEvent, await client.beginCommand('profile'));
-  assert.equal(relay.requests.at(-1).body.identity, undefined);
+  assert.ok(eventBodies(relay).every((body) => body.identity === undefined));
+  assert.equal(contactBodies(relay).length, 1);
   const enabled = await client.configureIdentity('enable');
-  assert.equal(enabled.identityEnabled, false);
-  await client.record(usageEvent, await client.beginCommand('profile'));
-  assert.equal(relay.requests.at(-1).body.identity, undefined);
+  assert.equal(enabled.contactEnabled, true);
+  await client.beginCommand('profile');
+  assert.equal(contactBodies(relay).length, 2);
 });
