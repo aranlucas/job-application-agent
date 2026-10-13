@@ -18,10 +18,11 @@
       "id": "grok",
       "name": "Grok Bot",
       "description": "Set up a persistent Job Application Agent Bot with your own résumé and preferences.",
-      "status": "Bot template · native share link pending",
+      "status": "Bot template · review mode",
+      "templateUrl": "https://x.ai/bot/0PNQABev0aiAUlhWI83XH",
       "docsUrl": "https://docs.x.ai/grok-bot/bots",
       "steps": [
-        { "title": "Create your Bot", "text": "In Grok Bot, choose New → Create new agent. Name it Job Application Agent. Use the setup prompt below in its conversation; keep reusable instructions in its profile or a saved skill. This guide is for the Grok Bot app, not ordinary Grok chat." },
+        { "title": "Create your Bot", "text": "Open the public Job Application Agent Bot template, or in Grok Bot choose New → Create new agent. Name it Job Application Agent. The template starts in review mode with no routines, plugins, or personal data. Use the setup prompt below in its conversation; keep reusable instructions in its profile or a saved skill. This guide is for the Grok Bot app, not ordinary Grok chat." },
         { "title": "Install on the Bot's computer", "text": "The setup prompt asks the Bot to install the complete CLI on its own computer. Verify Node.js 20+, npm, browser file upload, and human handoff there. Linux local profiles require an unlocked Secret Service and secret-tool, or the candidate's own private cloud backend.", "code": "npx job-application-agent@latest install" },
         { "title": "Start with review", "text": "Paste the setup prompt below. After the preflight, onboard your own résumé and preferences. A routine requires a separate schedule, timezone, scope, and authorization. Leave routines disabled in the public template." }
       ],

@@ -80,6 +80,12 @@ test("platform guides render usable prompts and publish only known platform rout
     assert.match(html, /review-each/);
     assert.match(html, /npx job-application-agent@latest install/);
     assert.match(html, /visible ATS success/);
+    if (platform === "grok") {
+      assert.match(html, /Bot template · review mode/);
+      assert.match(html, /https:\/\/x\.ai\/bot\/0PNQABev0aiAUlhWI83XH/);
+      assert.match(html, /every submit is confirmed/);
+      assert.doesNotMatch(html, /native share link pending/i);
+    }
   }
   const unknown = await render("/platforms/unknown-agent");
   assert.equal(unknown.status, 404);

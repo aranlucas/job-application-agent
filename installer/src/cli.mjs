@@ -60,7 +60,8 @@ export async function runCli(args, options = {}) {
     const selected = catalog.platforms.find(item => item.id === args[1]);
     if (!selected || args.length !== 2) throw new Error(USAGE);
     const steps = selected.steps.map((step, i) => `${i + 1}. ${step.title}\n${step.text}${step.code ? `\n\n${step.code}` : ''}`).join('\n\n');
-    const guide = `${selected.name}\n${selected.status}\n\n${steps}\n\nStarter prompt\n${selected.starter}\n\nReusable instructions\n${catalog.instructions}\n\nPlatform documentation: ${selected.docsUrl}`;
+    const templateLine = selected.templateUrl ? `\nBot template: ${selected.templateUrl}` : '';
+    const guide = `${selected.name}\n${selected.status}${templateLine}\n\n${steps}\n\nStarter prompt\n${selected.starter}\n\nReusable instructions\n${catalog.instructions}\n\nPlatform documentation: ${selected.docsUrl}`;
     output(guide);
     return guide;
   }

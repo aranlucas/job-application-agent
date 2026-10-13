@@ -78,7 +78,8 @@ Replace `hermes` with `grok` or `openclaw` for that guide. These commands print
 instructions only; they do not install a Bot, change agent settings, or access
 candidate state. Browse the [platform guides](https://jobappagent.com/platforms).
 Each template starts in review mode and requires browser validation on its host.
-The Grok Bot native share link is pending; use the setup prompt in the guide.
+The [Grok Bot template](https://x.ai/bot/0PNQABev0aiAUlhWI83XH) starts in review
+mode, where every submit is confirmed.
 The existing installer also supports Codex, Claude Code, Cursor, Copilot, and
 Gemini skill directories when present.
 
