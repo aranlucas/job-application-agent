@@ -8,6 +8,8 @@
   flex: 1;
   max-width: 68rem;
   padding-block: 2.5rem 4rem;
+  min-width: 0;
+  overflow-x: clip;
 }
 
 .header {
@@ -229,6 +231,12 @@
   grid-template-columns: minmax(0, 1fr) minmax(16rem, 24rem);
   gap: 3rem;
   align-items: start;
+  min-width: 0;
+  width: 100%;
+}
+
+.detailMain {
+  min-width: 0;
 }
 
 .detailHero h1 {
@@ -263,12 +271,18 @@
 }
 
 .facts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 1.5rem;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, auto));
+  gap: 1.25rem 1.75rem;
   margin: 0 0 1.6rem;
   color: var(--text);
   font-size: 0.9rem;
+  min-width: 0;
+}
+
+.facts > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .facts strong {
@@ -304,6 +318,9 @@
   border-radius: 1rem;
   background: var(--surface);
   padding: 1.5rem;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .panel h2 {
@@ -324,6 +341,12 @@
   display: flex;
   gap: 0.85rem;
   margin-bottom: 1.15rem;
+  min-width: 0;
+}
+
+.stepBody {
+  flex: 1;
+  min-width: 0;
 }
 
 .stepNum {
@@ -343,18 +366,26 @@
 .codeRow {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 0.65rem;
   padding: 0.7rem 0.85rem;
   border-radius: 0.65rem;
   background: var(--ink);
   color: #e9f3ee;
   font: 0.8rem/1.4 var(--font-mono), monospace;
+  min-width: 0;
+  max-width: 100%;
 }
 
-.codeRow code {
-  overflow: hidden;
-  text-overflow: ellipsis;
+.codeScroll {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+}
+
+.codeScroll code {
+  display: inline-block;
   white-space: nowrap;
 }
 
@@ -441,8 +472,21 @@
   }
 
   .detailLayout {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     gap: 1.75rem;
+  }
+
+  .facts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1rem 1.25rem;
+  }
+
+  .panel {
+    padding: 1.15rem;
+  }
+
+  .detailHero h1 {
+    overflow-wrap: anywhere;
   }
 }
 

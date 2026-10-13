@@ -201,8 +201,13 @@ test("publishes an indexable jobs board without founding pricing", async () => {
     assert.equal(open.status, 200);
     const openHtml = await open.text();
     assert.match(openHtml, /Reviewed and live, checked daily/);
+    assert.match(openHtml, /Last checked /);
+    assert.doesNotMatch(openHtml, /Last checked [^<"']{0,40}Reviewed and live/);
     assert.match(openHtml, /npx job-application-agent@latest install/);
-    assert.match(openHtml, /apply https:\/\//);
+    assert.match(openHtml, /Paste this into your agent/);
+    assert.match(openHtml, /Apply to this role in review mode:/);
+    assert.doesNotMatch(openHtml, />\s*apply https:\/\//);
+    assert.doesNotMatch(openHtml, /npx job-application-agent@latest apply/);
     assert.match(openHtml, /application\/ld\+json/);
     assert.doesNotMatch(openHtml, /\$49|Reserve for|founding/i);
   } finally {

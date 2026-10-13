@@ -6,6 +6,7 @@ import {
   formatReviewedDate,
   locationLabel,
 } from "../../lib/live-jobs.mjs";
+import { buildApplyPastePrompt, shortenUrlForDisplay } from "../../lib/job-apply-copy.mjs";
 import { CopyButton } from "./CopyButton";
 import styles from "./jobs.module.css";
 import { JobsBoardFooter, JobsBoardHeader } from "./JobsBoardChrome";
@@ -14,30 +15,36 @@ import type { BoardJob } from "./JobsBoard";
 const INSTALL_CMD = "npx job-application-agent@latest install";
 
 function ApplyPanel({ job }: { job: BoardJob }) {
-  const applyCmd = `apply ${job.url}`;
+  // Site shows a paste-prompt until `apply` is published on npm; CLI `apply` stays in installer.
+  const pastePrompt = buildApplyPastePrompt(job.url);
+  const pasteDisplay = `Apply to this role in review mode: ${shortenUrlForDisplay(job.url)}`;
   return (
     <aside className={styles.panel} aria-label="Apply with your agent">
       <h2>Apply with your agent</h2>
       <p className={styles.panelLead}>
-        Two commands in your terminal. In review mode you approve the draft before anything is submitted.
+        Install once, then paste the review-mode prompt into your agent. You approve the draft before anything is submitted.
       </p>
       <div className={styles.step}>
         <span className={styles.stepNum}>01</span>
-        <div>
+        <div className={styles.stepBody}>
           <div className={styles.stepTitle}>Install JobAppAgent (once)</div>
           <div className={styles.codeRow}>
-            <code>{INSTALL_CMD}</code>
+            <div className={styles.codeScroll}>
+              <code>{INSTALL_CMD}</code>
+            </div>
             <CopyButton value={INSTALL_CMD} />
           </div>
         </div>
       </div>
       <div className={styles.step}>
         <span className={styles.stepNum}>02</span>
-        <div>
-          <div className={styles.stepTitle}>Apply to this role</div>
+        <div className={styles.stepBody}>
+          <div className={styles.stepTitle}>Paste this into your agent</div>
           <div className={styles.codeRow}>
-            <code>{applyCmd}</code>
-            <CopyButton value={applyCmd} />
+            <div className={styles.codeScroll}>
+              <code title={pastePrompt}>{pasteDisplay}</code>
+            </div>
+            <CopyButton value={pastePrompt} />
           </div>
         </div>
       </div>
@@ -143,7 +150,7 @@ export function JobDetail({
           </>
         ) : (
           <div className={styles.detailLayout}>
-            <div>
+            <div className={styles.detailMain}>
               <p className={styles.crumb}>
                 <Link href="/jobs">Jobs</Link>
                 {" / "}
@@ -186,7 +193,7 @@ export function JobDetail({
                   Anything it can&apos;t verify comes back to you. Nothing you share is stored on this board.
                 </p>
                 <p className={styles.metaDate}>
-                  Last checked {formatReviewedDate(job.lastCheckedAt ?? job.lastSeenAt)} · {TRUST_LINE}
+                  Last checked {formatReviewedDate(job.lastCheckedAt ?? job.lastSeenAt)}
                 </p>
               </div>
             </div>
