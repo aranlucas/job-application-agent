@@ -655,6 +655,9 @@ test('maps commands and durations to bounded telemetry categories', () => {
   assert.equal(telemetryErrorCode(new Error('The stored profile needs migration. Run profile check, then profile migrate --stdin.')), 'invalid_input');
   assert.equal(telemetryErrorCode(new Error('Hard duplicate blocked: matching canonical URL.')), 'invalid_input');
   assert.equal(telemetryErrorCode(new Error('No local cloud lease is recorded. Run cloud lease-acquire.')), 'authentication_required');
+  assert.equal(telemetryErrorCode(new Error('Cloud state request failed (503): upstream')), 'network_failure');
+  assert.equal(telemetryErrorCode(new Error('Cloud state unavailable: fetch failed')), 'network_failure');
+  assert.equal(telemetryErrorCode(new Error('Resume export failed with HTTP 500.')), 'upload_failed');
 });
 
 test('builds a structured assessment event without description or candidate profile data', async () => {

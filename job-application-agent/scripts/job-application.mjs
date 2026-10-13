@@ -152,8 +152,9 @@ export function telemetryErrorCode(error) {
   if (/^Usage:/i.test(message)) return 'invalid_input';
   if (/keychain|keyring|secret service|secret-tool|credential manager|dpapi|authentication|login/i.test(message)) return 'authentication_required';
   if (/No local cloud lease|lease is recorded|live lease/i.test(message)) return 'authentication_required';
-  if (/network|fetch|http|relay unavailable|upstream/i.test(message)) return 'network_failure';
+  if (/Cloud state (unavailable|request failed)|network|fetch|http|relay unavailable|upstream/i.test(message)) return 'network_failure';
   if (/rate.?limit/i.test(message)) return 'rate_limited';
+  if (/upload failed|Resume export failed|did not contain a valid PDF|Canonical resume/i.test(message)) return 'upload_failed';
   if (/missing or unreadable|needs migration|Expected one JSON|Unknown |is invalid|must be|requires |required|expected|unsupported|Hard duplicate|cooldown|follow-up|Usage:/i.test(message)) return 'invalid_input';
   if (/invalid|must|required|expected|unsupported/i.test(message)) return 'invalid_input';
   return 'internal_error';
@@ -1819,7 +1820,8 @@ async function prepareCloudState(area, action) {
     // New submissions still fail closed because lease and intent operations
     // call the cloud directly. Local checks, research, and observed-result
     // ledger appends can continue and queue their idempotent recovery writes.
-    if (!/^Cloud state unavailable:/.test(error.message)) throw error;
+    // Treat transport and HTTP relay failures the same for automatic recovery.
+    if (!/^Cloud state (unavailable|request failed)/.test(error.message)) throw error;
   }
 }
 
