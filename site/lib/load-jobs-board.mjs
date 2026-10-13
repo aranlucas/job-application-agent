@@ -3,10 +3,16 @@ import { fixtureLiveJobs } from './jobs-board-data.mjs';
 import { jobIdFromSlug, jobSlug, isListedOpenJob } from './live-jobs.mjs';
 import { attachLocations } from './job-locations.mjs';
 
-function wantsFixtures(options = {}) {
+async function wantsFixtures(options = {}) {
   if (options.useFixtures === true) return true;
   if (options.useFixtures === false) return false;
   if (typeof process !== 'undefined' && process.env?.USE_JOBS_BOARD_FIXTURES === '1') return true;
+  try {
+    const { env } = await import('cloudflare:workers');
+    if (env?.USE_JOBS_BOARD_FIXTURES === '1') return true;
+  } catch {
+    /* outside Workers runtime */
+  }
   return false;
 }
 
@@ -25,7 +31,7 @@ export async function loadJobsBoard(options = {}) {
   const now = options.now ?? Date.now();
   let raw = [];
 
-  if (wantsFixtures(options)) {
+  if (await wantsFixtures(options)) {
     raw = fixtureLiveJobs(now);
   } else if (options.loadLive) {
     raw = await options.loadLive();
