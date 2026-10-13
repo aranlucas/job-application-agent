@@ -6,6 +6,7 @@ import {
   validateSourceContributionEnvelope,
 } from '../../job-application-agent/scripts/source-community-schema.mjs';
 import { publicStatsResponse, recordPublicAggregate } from './public-stats.mjs';
+import { runJobLivenessSweep } from './job-liveness.mjs';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -206,6 +207,30 @@ function sourceStore(env) {
   };
 }
 
+function mapLegacyJob(row) {
+  return {
+    jobId: row.job_id,
+    url: row.canonical_url,
+    company: row.company,
+    role: row.role,
+    applicationChannel: row.application_channel,
+    ...(row.discovery_source == null ? {} : { discoverySource: row.discovery_source }),
+    providerUrl: row.provider_url,
+    firstSeenAt: row.first_seen_at,
+    lastSeenAt: row.last_seen_at,
+    contributionCount: Number(row.contribution_count),
+  };
+}
+
+function mapLiveJob(row) {
+  return {
+    ...mapLegacyJob(row),
+    livenessStatus: row.liveness_status ?? 'unknown',
+    lastCheckedAt: row.last_checked_at ?? null,
+    closedAt: row.closed_at ?? null,
+  };
+}
+
 function jobStore(env) {
   if (env.JOB_STORE) return env.JOB_STORE;
   const database = env.PUBLIC_STATS_DB;
@@ -252,19 +277,34 @@ function jobStore(env) {
         ORDER BY jobs.last_seen_at DESC, jobs.job_id DESC
         LIMIT ?
       `).bind(cursor?.lastSeenAt ?? null, cursor?.lastSeenAt ?? null, cursor?.lastSeenAt ?? null, cursor?.jobId ?? null, limit + 1).all();
-      const jobs = (result.results ?? []).map((row) => ({
-        jobId: row.job_id,
-        url: row.canonical_url,
-        company: row.company,
-        role: row.role,
-        applicationChannel: row.application_channel,
-        ...(row.discovery_source == null ? {} : { discoverySource: row.discovery_source }),
-        providerUrl: row.provider_url,
-        firstSeenAt: row.first_seen_at,
-        lastSeenAt: row.last_seen_at,
-        contributionCount: Number(row.contribution_count),
-      }));
+      const jobs = (result.results ?? []).map((row) => mapLegacyJob(row));
       return { jobs: jobs.slice(0, limit), hasMore: jobs.length > limit };
+    },
+    async listLive({ limit, cursor }) {
+      const result = await database.prepare(`
+        SELECT jobs.job_id, jobs.canonical_url, jobs.company, jobs.role, jobs.application_channel,
+               jobs.discovery_source, jobs.provider_url, jobs.first_seen_at, jobs.last_seen_at,
+               COALESCE(jobs.liveness_status, 'unknown') AS liveness_status,
+               jobs.last_checked_at, jobs.closed_at,
+               (SELECT COUNT(*) FROM community_job_contributions WHERE job_id = jobs.job_id) AS contribution_count
+        FROM community_jobs AS jobs
+        WHERE jobs.publication_status = 'published'
+          AND jobs.review_status = 'maintainer-reviewed'
+          AND (? IS NULL OR jobs.last_seen_at < ? OR (jobs.last_seen_at = ? AND jobs.job_id < ?))
+        ORDER BY jobs.last_seen_at DESC, jobs.job_id DESC
+        LIMIT ?
+      `).bind(cursor?.lastSeenAt ?? null, cursor?.lastSeenAt ?? null, cursor?.lastSeenAt ?? null, cursor?.jobId ?? null, limit + 1).all();
+      const jobs = (result.results ?? []).map((row) => mapLiveJob(row));
+      return { jobs: jobs.slice(0, limit), hasMore: jobs.length > limit };
+    },
+    async updateLiveness(jobId, { status, checkedAt, closedAt }) {
+      await database.prepare(`
+        UPDATE community_jobs
+        SET liveness_status = ?,
+            last_checked_at = ?,
+            closed_at = ?
+        WHERE job_id = ?
+      `).bind(status, checkedAt, closedAt, jobId).run();
     },
   };
 }
@@ -319,16 +359,30 @@ async function contributeJob(request, env) {
   return response({ accepted: true, jobId, ...state }, 202);
 }
 
-async function listJobs(request, env) {
-  if (!await allowed(env.SOURCE_READ_RATE_LIMITER, await publicReadKey(request, env.SIGNING_SECRET, 'jobs'))) return response({ error: 'rate_limited' }, 429);
+async function parseJobListQuery(request) {
   const url = new URL(request.url);
-  for (const key of url.searchParams.keys()) if (!['limit', 'cursor'].includes(key)) return response({ error: 'invalid_job_query' }, 400);
+  for (const key of url.searchParams.keys()) if (!['limit', 'cursor'].includes(key)) throw Object.assign(new Error('invalid_job_query'), { status: 400 });
   const rawLimit = url.searchParams.get('limit');
   const limit = rawLimit == null ? 50 : Number(rawLimit);
-  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) return response({ error: 'invalid_job_query' }, 400);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw Object.assign(new Error('invalid_job_query'), { status: 400 });
   let cursor;
-  try { cursor = jobCursor(url.searchParams.get('cursor')); } catch { return response({ error: 'invalid_job_query' }, 400); }
-  const result = await jobStore(env).list({ limit, cursor });
+  try { cursor = jobCursor(url.searchParams.get('cursor')); } catch { throw Object.assign(new Error('invalid_job_query'), { status: 400 }); }
+  return { limit, cursor };
+}
+
+async function listJobs(request, env) {
+  if (!await allowed(env.SOURCE_READ_RATE_LIMITER, await publicReadKey(request, env.SIGNING_SECRET, 'jobs'))) return response({ error: 'rate_limited' }, 429);
+  let query;
+  try { query = await parseJobListQuery(request); } catch { return response({ error: 'invalid_job_query' }, 400); }
+  const result = await jobStore(env).list(query);
+  return response({ version: 1, jobs: result.jobs, nextCursor: result.hasMore ? encodeJobCursor(result.jobs.at(-1)) : null }, 200, 'no-store');
+}
+
+async function listLiveJobs(request, env) {
+  if (!await allowed(env.SOURCE_READ_RATE_LIMITER, await publicReadKey(request, env.SIGNING_SECRET, 'jobs-live'))) return response({ error: 'rate_limited' }, 429);
+  let query;
+  try { query = await parseJobListQuery(request); } catch { return response({ error: 'invalid_job_query' }, 400); }
+  const result = await jobStore(env).listLive(query);
   return response({ version: 1, jobs: result.jobs, nextCursor: result.hasMore ? encodeJobCursor(result.jobs.at(-1)) : null }, 200, 'no-store');
 }
 
@@ -342,6 +396,7 @@ export async function handleRequest(request, env) {
   if (request.method === 'POST' && pathname === '/v1/sources') return contributeSource(request, env);
   if (request.method === 'GET' && pathname === '/v1/sources') return listSources(request, env);
   if (request.method === 'POST' && pathname === '/v1/jobs') return contributeJob(request, env);
+  if (request.method === 'GET' && pathname === '/v1/jobs/live') return listLiveJobs(request, env);
   if (request.method === 'GET' && pathname === '/v1/jobs') return listJobs(request, env);
   return response({ error: 'not_found' }, 404);
 }
@@ -350,5 +405,11 @@ export default {
   async fetch(request, env) {
     try { return await handleRequest(request, env); }
     catch (error) { return response({ error: error?.status === 413 ? 'payload_too_large' : 'bad_request' }, error?.status ?? 400); }
+  },
+  async scheduled(_controller, env) {
+    await runJobLivenessSweep(env, {
+      store: env.JOB_STORE ?? jobStore(env),
+      fetchImpl: env.LIVENESS_FETCH ?? fetch,
+    });
   },
 };

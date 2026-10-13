@@ -170,19 +170,44 @@ test("publishes crawler guidance and a canonical sitemap", async () => {
   const sitemapXml = await sitemap.text();
   assert.match(sitemapXml, /https:\/\/jobappagent\.com\/privacy/);
   assert.match(sitemapXml, /https:\/\/stats\.jobappagent\.com/);
+  assert.match(sitemapXml, /https:\/\/jobappagent\.com\/jobs</);
 });
 
-test("provides an unlisted, non-indexable published jobs page", async () => {
-  const response = await render("/jobs");
-  assert.equal(response.status, 200);
-  const html = await response.text();
-  assert.match(html, /Published jobs/);
-  assert.match(html, /name="robots" content="noindex, nofollow"/);
-  assert.match(html, /Loading published jobs/);
-  assert.match(html, /not placements or jobs secured/);
-  for (const path of ["/", "/community-view", "/sitemap.xml"]) {
-    const publicHtml = await (await render(path)).text();
-    assert.doesNotMatch(publicHtml, /(?:href="[^"]*\/jobs(?:"|\?)|<loc>[^<]*\/jobs<)/);
+test("publishes an indexable jobs board without founding pricing", async () => {
+  const previous = process.env.USE_JOBS_BOARD_FIXTURES;
+  process.env.USE_JOBS_BOARD_FIXTURES = "1";
+  try {
+    const response = await render("/jobs");
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.match(html, /Open roles, reviewed/);
+    assert.match(html, /canonical" href="https:\/\/jobappagent\.com\/jobs"/);
+    assert.doesNotMatch(html, /name="robots" content="noindex/);
+    assert.doesNotMatch(html, /\$49|Reserve for|founding/i);
+    assert.doesNotMatch(html, /contributor_hash|contributorHash/);
+    assert.match(html, /Reviewed and live, checked daily|Apply with your agent|Roles reviewed by maintainers/);
+    assert.match(html, /Example Labs|Senior Backend Engineer/);
+
+    const closed = await render("/jobs/example-mark-product-designer-eeeeeeeeeeeeeeee");
+    assert.equal(closed.status, 200);
+    const closedHtml = await closed.text();
+    assert.match(closedHtml, /This role closed on/);
+    assert.match(closedHtml, /application\/ld\+json/);
+    assert.match(closedHtml, /validThrough/);
+    assert.doesNotMatch(closedHtml, /npx job-application-agent@latest install/);
+    assert.doesNotMatch(closedHtml, /\$49|Reserve for/);
+
+    const open = await render("/jobs/example-labs-senior-backend-engineer-aaaaaaaaaaaaaaaa");
+    assert.equal(open.status, 200);
+    const openHtml = await open.text();
+    assert.match(openHtml, /Reviewed and live, checked daily/);
+    assert.match(openHtml, /npx job-application-agent@latest install/);
+    assert.match(openHtml, /apply https:\/\//);
+    assert.match(openHtml, /application\/ld\+json/);
+    assert.doesNotMatch(openHtml, /\$49|Reserve for|founding/i);
+  } finally {
+    if (previous === undefined) delete process.env.USE_JOBS_BOARD_FIXTURES;
+    else process.env.USE_JOBS_BOARD_FIXTURES = previous;
   }
 });
 

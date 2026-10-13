@@ -36,6 +36,9 @@ export function LandingAnalyticsProvider({ children }: { children: ReactNode }) 
     let active = true;
     void (async () => {
       try {
+        if (typeof window !== "undefined" && (window as Window & { __JAA_JOBS_NO_ANALYTICS__?: number }).__JAA_JOBS_NO_ANALYTICS__) {
+          return;
+        }
         const response = await fetch("/api/analytics-config", { credentials: "omit" });
         if (!active || response.status === 204 || !response.ok) return;
         const body = await response.json() as { apiKey?: string; host?: string };
@@ -54,6 +57,10 @@ export function LandingAnalyticsProvider({ children }: { children: ReactNode }) 
 
   useEffect(() => {
     if (!remote) return;
+    // Jobs board surfaces set this flag — no per-candidate / page analytics there.
+    if (typeof window !== "undefined" && (window as Window & { __JAA_JOBS_NO_ANALYTICS__?: number }).__JAA_JOBS_NO_ANALYTICS__) {
+      return;
+    }
     void captureLandingPageview({ apiKey: remote.apiKey, host: remote.host });
   }, [remote]);
 

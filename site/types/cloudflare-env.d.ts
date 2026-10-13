@@ -23,6 +23,11 @@ declare namespace Cloudflare {
     RATE_LIMIT_SALT?: string;
     COMMUNITY_STATS_UPSTREAM?: string;
     COMMUNITY_JOBS_UPSTREAM?: string;
+    /** Live jobs feed with liveness fields (`/v1/jobs/live`). */
+    COMMUNITY_JOBS_LIVE_UPSTREAM?: string;
+    /** When "1", /jobs pages render fixture roles (demos/screenshots only). */
+    USE_JOBS_BOARD_FIXTURES?: string;
+    TELEMETRY?: { fetch: typeof fetch };
     REFUND_CRON_SECRET?: string;
     ATTENTION_NOTIFY_SECRET?: string;
     ATTENTION_MAGIC_LINK_SECRET?: string;
