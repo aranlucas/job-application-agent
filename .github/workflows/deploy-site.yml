@@ -27,11 +27,23 @@ jobs:
       - name: Install dependencies
         run: npm ci && npm --prefix site ci
       - name: Run site tests
+        # site/package.json "test" runs `vinext build` first; dist/ is gitignored
+        # and must never be taken from the checkout.
         run: npm --prefix site test
       - name: Run site lint and typecheck
         run: npm --prefix site run lint && npm --prefix site run typecheck
-      - name: Build site
+      - name: Build site for deploy
+        # Fresh vinext build for wrangler (main/assets under site/dist/). Regenerates
+        # vinext-server.json prerenderSecret; do not deploy committed artifacts.
         run: npm --prefix site run build
+      - name: Reject accidental committed site build output
+        run: |
+          tracked="$(git ls-files 'site/dist' 'site/dist/**')"
+          if [[ -n "$tracked" ]]; then
+            echo 'site/dist/ is tracked in git; remove it with git rm --cached and keep it gitignored.' >&2
+            printf '%s\n' "$tracked" >&2
+            exit 1
+          fi
       - name: Deploy Worker
         # Stamp Sentry release with the commit SHA. Source maps for Workers are
         # out of scope for P0 — release tagging alone is enough to group issues.

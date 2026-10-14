@@ -100,6 +100,15 @@ jobs:
             echo 'Potential committed secret detected.' >&2
             exit 1
           fi
+      - name: Reject committed site build output
+        shell: bash
+        run: |
+          tracked="$(git ls-files 'site/dist' 'site/dist/**' 'site/.next' 'site/.next/**' 'site/.vinext' 'site/.vinext/**' 'site/tsconfig.tsbuildinfo')"
+          if [[ -n "$tracked" ]]; then
+            echo 'Site build artifacts must not be tracked (secrets can land in vinext-server.json).' >&2
+            printf '%s\n' "$tracked" >&2
+            exit 1
+          fi
 
   dependency-review:
     name: dependency-review
