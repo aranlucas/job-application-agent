@@ -1,5 +1,20 @@
 import Link from "next/link";
+import type { ReactNode } from "react";
 import { FoundingCheckout } from "./FoundingCheckout";
+
+function primaryNavLinks(community: boolean): ReactNode {
+  if (community) {
+    return <>
+      <a href="https://jobappagent.com">Product</a>
+      <a href="#methodology">Methodology</a>
+    </>;
+  }
+  return <>
+    <a href="https://stats.jobappagent.com">Community</a>
+    <Link href="/#process">How it works</Link>
+    <Link href="/#boundaries">Boundaries</Link>
+  </>;
+}
 
 export function SiteHeader({
   community = false,
@@ -20,11 +35,18 @@ export function SiteHeader({
           <span className="brand-lockup"><span className="brand-name">JobApp<span>Agent</span></span><span className="brand-tagline">A calmer job search</span></span>
         </Link>
         <div className="nav-links">
-          {community
-            ? <><a href="https://jobappagent.com">Product</a><a href="#methodology">Methodology</a></>
-            : <><a href="https://stats.jobappagent.com">Community</a><Link href="/#process">How it works</Link><Link href="/#boundaries">Boundaries</Link></>}
+          {primaryNavLinks(community)}
           {foundingCta ? <FoundingCheckout compact /> : null}
         </div>
+        {/* Phone menu for /jobs* (no founding CTA). Hidden on wider breakpoints via CSS. */}
+        {!foundingCta ? (
+          <details className="site-mobile-menu">
+            <summary>Menu</summary>
+            <div className="site-mobile-menu-links">
+              {primaryNavLinks(community)}
+            </div>
+          </details>
+        ) : null}
       </div>
     </nav>
   </>;

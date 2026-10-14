@@ -289,11 +289,13 @@ test("publishes an indexable jobs board with shared site chrome", async () => {
     assert.match(html, /Open roles, reviewed/);
     assert.match(html, /canonical" href="https:\/\/jobappagent\.com\/jobs"/);
     assert.doesNotMatch(html, /name="robots" content="noindex/);
-    // Shared SiteHeader nav without founding CTA on /jobs*.
+    // Shared SiteHeader nav without founding CTA on /jobs* (+ phone Menu toggle).
     assert.match(html, /stats\.jobappagent\.com/);
     assert.match(html, /How it works/);
     assert.match(html, /Boundaries/);
     assert.match(html, /site-nav-jobs/);
+    assert.match(html, /site-mobile-menu/);
+    assert.match(html, /<summary>Menu<\/summary>/);
     // Whole page must stay free of founding pricing (header included).
     assert.doesNotMatch(html, /\$49|Reserve for \$49|Reserve founding|Founding reservation|FOUNDING RESERVATION/i);
     assert.doesNotMatch(html, /contributor_hash|contributorHash/);
