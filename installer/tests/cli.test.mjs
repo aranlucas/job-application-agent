@@ -79,7 +79,7 @@ test('apply with a valid https URL prints the review-mode prompt', async () => {
   assert.match(text, /do not submit/i);
   assert.match(text, /approval/i);
   assert.match(text, /Never auto-submit/i);
-  assert.ok(text.includes(url), 'prompt should include the apply URL verbatim');
+  assert.match(text, /https:\/\/jobs\.example\.com\/boards\/acme\/jobs\/123/);
   assert.match(text, /npx job-application-agent@latest install/);
   assert.match(text, /review mode required/i);
   assert.equal(result.reviewMode, true);
