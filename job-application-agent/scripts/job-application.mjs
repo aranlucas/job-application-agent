@@ -42,7 +42,7 @@ const INTERVIEW_QUALITIES = new Set(['promising', 'viable', 'weak', 'dead']);
 const FAILURE_POINTS = new Set(['role-scope', 'company-problem', 'constraints', 'interviewer', 'process', 'unknown']);
 const APPROVALS = new Set(['APPROVE SUBMIT', 'STANDING AUTHORIZATION']);
 const MODES = new Set(['review-each', 'routine-auto']);
-const TELEMETRY_DURATIONS = new Set(['under-1s', '1-5s', '5-30s', '30-60s', '1-2m', '2-5m', '5-15m', '15m-plus']);
+const TELEMETRY_DURATIONS = new Set(['under-1s', '1-5s', '5-30s', '30-60s', '1-2m', '2-5m', '5-15m', '15m-plus', 'unknown']);
 const AUTONOMY_SCOPES = Object.freeze(['discover', 'assess', 'fill', 'upload-resume', 'submit', 'send-recruiting-email', 'record-ledger', 'record-outcomes', 'cleanup-tabs', 'open-improvement-pr']);
 const AUTONOMY_HARD_STOPS = Object.freeze(['authentication', 'mfa', 'captcha', 'legal-attestation', 'demographic', 'government-id', 'unverifiable-claim', 'ambiguous-authorization', 'ambiguous-compensation']);
 const ATTENTION_STAGES = new Set(['discovery', 'assessment', 'application', 'contact', 'resume', 'questions', 'legal', 'demographic', 'review', 'submission', 'confirmation', 'outcome', 'answers', 'upload']);
@@ -117,12 +117,15 @@ export function commandCategory([area, action]) {
   if (area === 'ledger' && action === 'outcome') return 'outcome';
   if (area === 'ledger' && action === 'review') return 'review';
   if (area === 'ledger' && action === 'review-ack') return 'review';
-  if (area === 'ledger') return 'apply';
+  if (area === 'ledger' && (action === 'delivery' || action === 'retry' || action === 'deliveries')) return 'delivery';
+  if (area === 'ledger' && action === 'check') return 'check';
+  if (area === 'ledger') return 'other';
   if (area === 'telemetry') return 'telemetry';
   if (area === 'autonomy') return 'profile';
   if (area === 'round') return 'round';
   if (area === 'sources') return 'search';
-  if (area === 'attention' || area === 'friction') return 'batch';
+  if (area === 'attention') return 'attention';
+  if (area === 'friction') return 'friction';
   if (area === 'cloud') return 'other';
   return 'other';
 }
@@ -131,7 +134,22 @@ function telemetryStage(command, error) {
   const message = String(error?.message ?? '');
   if (/^Usage:/i.test(message)) return 'application';
   if (/cloud|lease|intent/i.test(message)) return 'application';
-  return ({ search: 'discovery', assess: 'assessment', apply: 'submission', outcome: 'outcome', review: 'review', resume: 'resume', profile: 'contact', onboard: 'contact', batch: 'application', other: 'application' })[command] ?? 'application';
+  return ({
+    search: 'discovery',
+    assess: 'assessment',
+    apply: 'submission',
+    check: 'submission',
+    delivery: 'outcome',
+    outcome: 'outcome',
+    review: 'review',
+    resume: 'resume',
+    profile: 'contact',
+    onboard: 'contact',
+    attention: 'application',
+    friction: 'application',
+    batch: 'application',
+    other: 'application',
+  })[command] ?? 'application';
 }
 
 export function telemetryErrorCategory(error) {
@@ -297,9 +315,27 @@ export function assertSubmissionFillGuard(entry, metrics, thinOverride = null) {
   }
 }
 
-async function telemetryApplicationSubmitted(entry, details = {}) {
+/**
+ * Build application_submitted analytics. Missing telemetry must not look like an empty form:
+ * send null fill counts + durationBucket "unknown" with telemetrySupplied:false.
+ */
+export async function telemetryApplicationSubmitted(entry, details = {}) {
   const identity = await jobIdentity(entry.url);
   const metrics = resolveSubmissionFillMetrics(entry, details);
+  const telemetrySupplied = details.telemetrySupplied === true;
+  const omitCounts = metrics.metricsSource === 'empty';
+
+  let resolvedDuration = metrics.durationBucket ?? details.durationBucket ?? null;
+  if (resolvedDuration == null) {
+    const startedAt = details.lifecycleStartedAt ?? details.startedAt ?? null;
+    const startedMs = startedAt ? Date.parse(startedAt) : Number.NaN;
+    if (Number.isFinite(startedMs)) {
+      const endedMs = details.endedAt ? Date.parse(details.endedAt) : Date.now();
+      if (Number.isFinite(endedMs)) resolvedDuration = durationBucket(Math.max(0, endedMs - startedMs));
+    }
+  }
+  if (resolvedDuration == null || !TELEMETRY_DURATIONS.has(resolvedDuration)) resolvedDuration = 'unknown';
+
   return {
     event: 'application_submitted',
     properties: {
@@ -307,11 +343,12 @@ async function telemetryApplicationSubmitted(entry, details = {}) {
       company: entry.company,
       title: entry.role,
       ats: sourceToAts(entry.applicationChannel ?? entry.source),
-      durationBucket: metrics.durationBucket ?? details.durationBucket ?? durationBucket(0),
-      fieldsFilled: metrics.fieldsFilled,
-      shortAnswerCount: metrics.shortAnswerCount,
-      resumeUploaded: metrics.resumeUploaded,
+      durationBucket: resolvedDuration,
+      fieldsFilled: omitCounts ? null : metrics.fieldsFilled,
+      shortAnswerCount: omitCounts ? null : metrics.shortAnswerCount,
+      resumeUploaded: omitCounts ? null : Boolean(metrics.resumeUploaded),
       approvalMode: entry.approval === 'STANDING AUTHORIZATION' ? 'routine-auto' : 'review-each',
+      telemetrySupplied,
     },
   };
 }
@@ -2149,6 +2186,7 @@ async function executeCommand([area, action, value], telemetry, session, communi
   else if (area === 'ledger' && action === 'deliveries') result = await deliveryHistory(value);
   else if (area === 'ledger' && action === 'add' && value === '--stdin') {
     const input = await jsonStdin();
+    const telemetrySupplied = input.telemetry != null;
     const telemetryDetails = validateSubmissionTelemetry(input.telemetry);
     const entry = validateLedgerEntry(input);
     const fillMetrics = resolveSubmissionFillMetrics(entry, telemetryDetails);
@@ -2156,7 +2194,13 @@ async function executeCommand([area, action, value], telemetry, session, communi
     result = await ledgerAdd(entry, input.duplicateOverride, input.companyReapplyOverride, input.cloudIntentId && input.cloudLeaseId ? { intentId: input.cloudIntentId, leaseId: input.cloudLeaseId } : null);
     result.communityJob = await communityJobsSync(community, { limit: 1, applicationIds: [entry.id] });
     if (!isFixtureOrSandboxApply(entry)) {
-      await emitDomainEvent(telemetry, session, await telemetryApplicationSubmitted(entry, fillMetrics));
+      const identity = await jobIdentity(entry.url);
+      const lifecycleStartedAt = await telemetry.applicationStartedAt?.(identity.jobHash);
+      await emitDomainEvent(telemetry, session, await telemetryApplicationSubmitted(entry, {
+        ...fillMetrics,
+        telemetrySupplied,
+        ...(lifecycleStartedAt ? { lifecycleStartedAt } : {}),
+      }));
     }
   } else if (area === 'ledger' && action === 'outcome' && value === '--stdin') {
     const outcome = await ledgerOutcome(await jsonStdin());

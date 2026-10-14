@@ -118,7 +118,7 @@ test('no telemetry event payload may contain name, email, phone, or résumé tex
     { event: 'command_completed', properties: { command: 'apply', result: 'success', durationBucket: '1-5s' } },
     { event: 'application_started', properties: { jobHash: 'a'.repeat(64), ats: 'greenhouse', approvalMode: 'routine-auto', requiredFieldCount: 4, resumeRequired: true, coverLetterRequired: false, referralPresent: false } },
     { event: 'application_skipped', properties: { jobHash: 'a'.repeat(64), reason: 'low-fit', fitScore: 40, eligibility: 'eligible' } },
-    { event: 'application_submitted', properties: { company: 'Example', title: 'Engineer', jobHash: 'a'.repeat(64), domain: 'jobs.example.com', ats: 'greenhouse', durationBucket: '2-5m', fieldsFilled: 8, shortAnswerCount: 1, resumeUploaded: true, approvalMode: 'routine-auto' } },
+    { event: 'application_submitted', properties: { company: 'Example', title: 'Engineer', jobHash: 'a'.repeat(64), domain: 'jobs.example.com', ats: 'greenhouse', durationBucket: '2-5m', fieldsFilled: 8, shortAnswerCount: 1, resumeUploaded: true, approvalMode: 'routine-auto', telemetrySupplied: true } },
     { event: 'skill_error', properties: { errorCode: 'invalid_input', stage: 'contact', recoverable: true, errorCategory: 'validation', sanitizedMessage: sanitizeTelemetryErrorMessage('profile.email must be valid; got candidate@example.com and https://evil.example/a?q=1'), fieldLabel: 'profile.email' } },
   ];
   for (const sample of samples) {

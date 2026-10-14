@@ -471,6 +471,49 @@ test('ledger add automatically attempts community sharing and reports durable pe
   assert.equal(JSON.stringify(pending.communityJobs).includes('answers'), false);
 });
 
+test('blocks Rapid HighLevel-style different-role bursts under the 15-day company cooldown', async (t) => {
+  const { env } = await fixture(t, 'highlevel-company-burst');
+  const roles = [
+    { id: 'hl-1', role: 'Lead Engineer - Platform (Special Projects)', url: 'https://jobs.lever.co/highlevel/hl-1' },
+    { id: 'hl-2', role: 'Staff Engineer - Backend', url: 'https://jobs.lever.co/highlevel/hl-2' },
+    { id: 'hl-3', role: 'Senior SDE - Conversations', url: 'https://jobs.lever.co/highlevel/hl-3' },
+  ];
+  const firstAt = new Date().toISOString();
+  cli(env, ['ledger', 'add', '--stdin'], submission(1, undefined, {
+    id: roles[0].id,
+    company: 'HighLevel',
+    role: roles[0].role,
+    url: roles[0].url,
+    employerJobId: 'highlevel:hl-1',
+    source: 'lever',
+    applicationChannel: 'lever',
+    submittedAt: firstAt,
+  }));
+
+  for (const role of roles.slice(1)) {
+    const check = cli(env, ['ledger', 'check', '--stdin'], {
+      id: role.id,
+      company: 'HighLevel',
+      role: role.role,
+      url: role.url,
+      employerJobId: `highlevel:${role.id}`,
+    });
+    assert.equal(check.companyReapply.decision, 'cooldown-active', role.role);
+    const blocked = cliFailure(env, ['ledger', 'add', '--stdin'], submission(2, undefined, {
+      id: role.id,
+      company: 'HighLevel',
+      role: role.role,
+      url: role.url,
+      employerJobId: `highlevel:${role.id}`,
+      source: 'lever',
+      applicationChannel: 'lever',
+      submittedAt: new Date().toISOString(),
+    }));
+    assert.equal(blocked.status, 1, role.role);
+    assert.match(blocked.stderr, /reapplication cooldown is active/i);
+  }
+});
+
 test('blocks a different role at the same company during the 15-day cooldown', async (t) => {
   const { env } = await fixture(t, 'company-cooldown-enforced');
   const recent = new Date(Date.now() - (5 * 86_400_000)).toISOString();
