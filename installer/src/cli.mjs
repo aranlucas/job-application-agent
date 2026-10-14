@@ -3,13 +3,41 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { assertApplyUrlAllowed, parseApplyUrl } from '../../job-application-agent/scripts/ats/apply-url-gate.mjs';
 import { installSkill, readInstallStatus, resolveAgentHome, setAutomaticUpdates, updateSkill } from './installer.mjs';
 import { createUpdateRunner } from './runner.mjs';
 
-const USAGE = `Usage:\n  job-application-agent install\n  job-application-agent update\n  job-application-agent status\n  job-application-agent updates enable|disable\n  job-application-agent platforms [hermes|grok|openclaw]\n  job-application-agent outreach <command>\n`;
+const USAGE = `Usage:\n  job-application-agent install\n  job-application-agent update\n  job-application-agent status\n  job-application-agent updates enable|disable\n  job-application-agent platforms [hermes|grok|openclaw]\n  job-application-agent outreach <command>\n  job-application-agent apply <url>\n`;
 
 function defaultPackageRoot() {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+}
+
+export function assertPublicHttpsApplyUrl(value) {
+  const parsed = parseApplyUrl(value);
+  if (parsed.protocol !== 'https:') {
+    throw new Error(`Apply URL must be HTTPS: ${value}`);
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error(`Apply URL must not include username or password: ${value}`);
+  }
+  return parsed;
+}
+
+export function buildApplyReviewPrompt(url) {
+  return [
+    'Apply to this role in review mode (do not submit until I approve):',
+    '',
+    `URL: ${url}`,
+    '',
+    'Instructions:',
+    '1. Open the posting and extract only facts from my profile/resume.',
+    '2. Draft the application.',
+    '3. Stop and show me the draft for approval before any submit.',
+    '4. Never auto-submit. Review mode stays on.',
+    '',
+    'Paste this into your JobAppAgent session, or run your usual agent after: npx job-application-agent@latest install',
+  ].join('\n');
 }
 
 async function defaultVersion(packageRoot) {
@@ -70,6 +98,34 @@ export async function runCli(args, options = {}) {
     const { runOutreach } = await import('../../job-application-agent/scripts/outreach-cli.mjs');
     const result = await runOutreach(args.slice(1));
     output(JSON.stringify(result, null, 2));
+    return result;
+  }
+
+  if (command === 'apply') {
+    const rawUrl = args[1];
+    if (!rawUrl || args.length !== 2) throw new Error(USAGE);
+    const parsed = assertPublicHttpsApplyUrl(rawUrl);
+    const href = parsed.href;
+    const env = options.env || process.env;
+    const log = options.log || ((message) => {
+      if (typeof process !== 'undefined' && process.stderr) process.stderr.write(`${message}\n`);
+    });
+    const gate = assertApplyUrlAllowed(href, { liveApply: true, env, log });
+    const prompt = buildApplyReviewPrompt(href);
+    const confirmation = `Confirmed: apply ${href} — review mode required; do not submit until approved.`;
+    const result = {
+      url: href,
+      reviewMode: true,
+      prompt,
+      confirmation,
+      applyKind: gate.applyKind,
+      liveApply: gate.liveApply,
+      entry: gate.entry,
+    };
+    if (options.launchPrompt) return result;
+    output(prompt);
+    output('');
+    output(confirmation);
     return result;
   }
 

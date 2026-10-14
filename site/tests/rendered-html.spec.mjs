@@ -169,10 +169,10 @@ test("product SiteHeader nav works from non-home pages", async () => {
 
 test("jobs empty state offers Install JobAppAgent when unfiltered", async () => {
   const source = await import("node:fs/promises").then((fs) =>
-    fs.readFile(new URL("../app/jobs/PublishedJobs.tsx", import.meta.url), "utf8"),
+    fs.readFile(new URL("../app/jobs/JobsBoard.tsx", import.meta.url), "utf8"),
   );
-  assert.match(source, /No published jobs right now/);
-  assert.match(source, /New listings appear here as the community publishes them/);
+  assert.match(source, /No open roles right now/);
+  assert.match(source, /New listings appear here as maintainers review the community registry/);
   assert.match(source, /Install JobAppAgent/);
   assert.match(source, /jobappagent\.com\/platforms/);
   assert.match(source, /Clear filters/);
@@ -236,6 +236,7 @@ test("publishes crawler guidance and a host-local apex sitemap", async () => {
   assert.match(await robots.text(), /Disallow: \/api\//);
   const sitemapXml = await sitemap.text();
   assert.match(sitemapXml, /https:\/\/jobappagent\.com\/privacy/);
+  assert.match(sitemapXml, /https:\/\/jobappagent\.com\/jobs</);
   assert.doesNotMatch(sitemapXml, /stats\.jobappagent\.com/);
   const statsXml = await statsSitemap.text();
   assert.match(statsXml, /https:\/\/stats\.jobappagent\.com\//);
@@ -276,17 +277,48 @@ test("platform pages publish BreadcrumbList JSON-LD and apex canonicals", async 
   }
 });
 
-test("provides an unlisted, non-indexable published jobs page", async () => {
-  const response = await render("/jobs");
-  assert.equal(response.status, 200);
-  const html = await response.text();
-  assert.match(html, /Published jobs/);
-  assert.match(html, /name="robots" content="noindex, nofollow"/);
-  assert.match(html, /Loading published jobs/);
-  assert.match(html, /not placements or jobs secured/);
-  for (const path of ["/", "/community-view", "/sitemap.xml"]) {
-    const publicHtml = await (await render(path)).text();
-    assert.doesNotMatch(publicHtml, /(?:href="[^"]*\/jobs(?:"|\?)|<loc>[^<]*\/jobs<)/);
+test("publishes an indexable jobs board without founding pricing", async () => {
+  const previous = process.env.USE_JOBS_BOARD_FIXTURES;
+  process.env.USE_JOBS_BOARD_FIXTURES = "1";
+  try {
+    const response = await render("/jobs");
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.match(html, /Open roles, reviewed/);
+    assert.match(html, /canonical" href="https:\/\/jobappagent\.com\/jobs"/);
+    assert.doesNotMatch(html, /name="robots" content="noindex/);
+    // Jobs chrome must not surface founding pricing. Avoid matching
+    // framework module ids like FoundingCheckout in not-found RSC fallbacks.
+    assert.doesNotMatch(html, /\$49|Reserve for \$49|Reserve founding|Founding reservation|FOUNDING RESERVATION/i);
+    assert.doesNotMatch(html, /contributor_hash|contributorHash/);
+    assert.match(html, /Reviewed and live, checked daily|Apply with your agent|Roles reviewed by maintainers/);
+    assert.match(html, /Example Labs|Senior Backend Engineer/);
+
+    const closed = await render("/jobs/example-mark-product-designer-eeeeeeeeeeeeeeee");
+    assert.equal(closed.status, 200);
+    const closedHtml = await closed.text();
+    assert.match(closedHtml, /This role closed on/);
+    assert.match(closedHtml, /application\/ld\+json/);
+    assert.match(closedHtml, /validThrough/);
+    assert.doesNotMatch(closedHtml, /npx job-application-agent@latest install/);
+    assert.doesNotMatch(closedHtml, /\$49|Reserve for \$49|Founding reservation/i);
+
+    const open = await render("/jobs/example-labs-senior-backend-engineer-aaaaaaaaaaaaaaaa");
+    assert.equal(open.status, 200);
+    const openHtml = await open.text();
+    assert.match(openHtml, /Reviewed and live, checked daily/);
+    assert.match(openHtml, /Last checked /);
+    assert.doesNotMatch(openHtml, /Last checked [^<"']{0,40}Reviewed and live/);
+    assert.match(openHtml, /npx job-application-agent@latest install/);
+    assert.match(openHtml, /Paste this into your agent/);
+    assert.match(openHtml, /Apply to this role in review mode:/);
+    assert.doesNotMatch(openHtml, />\s*apply https:\/\//);
+    assert.doesNotMatch(openHtml, /npx job-application-agent@latest apply/);
+    assert.match(openHtml, /application\/ld\+json/);
+    assert.doesNotMatch(openHtml, /\$49|Reserve for \$49|Reserve founding|Founding reservation|FOUNDING RESERVATION/i);
+  } finally {
+    if (previous === undefined) delete process.env.USE_JOBS_BOARD_FIXTURES;
+    else process.env.USE_JOBS_BOARD_FIXTURES = previous;
   }
 });
 

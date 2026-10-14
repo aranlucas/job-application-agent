@@ -77,7 +77,14 @@ function env() {
     },
     JOB_STORE: {
       async contribute(job, contributorHash) {
-        const current = communityJobs.get(job.jobId) ?? { ...job, publicationStatus: 'pending', reviewStatus: 'unreviewed' };
+        const current = communityJobs.get(job.jobId) ?? {
+          ...job,
+          publicationStatus: 'pending',
+          reviewStatus: 'unreviewed',
+          livenessStatus: 'unknown',
+          lastCheckedAt: null,
+          closedAt: null,
+        };
         communityJobs.set(job.jobId, { ...current, lastSeenAt: job.lastSeenAt });
         const hashes = jobContributorHashes.get(job.jobId) ?? new Set();
         hashes.add(contributorHash);
@@ -89,8 +96,51 @@ function env() {
           .filter((job) => job.publicationStatus === 'published' && job.reviewStatus === 'maintainer-reviewed')
           .sort((left, right) => right.lastSeenAt.localeCompare(left.lastSeenAt) || right.jobId.localeCompare(left.jobId));
         const start = cursor == null ? 0 : ordered.findIndex((job) => job.lastSeenAt < cursor.lastSeenAt || (job.lastSeenAt === cursor.lastSeenAt && job.jobId < cursor.jobId));
-        const jobs = ordered.slice(Math.max(0, start), Math.max(0, start) + limit + 1).map((job) => ({ ...job, contributionCount: jobContributorHashes.get(job.jobId)?.size ?? 0 }));
+        const jobs = ordered.slice(Math.max(0, start), Math.max(0, start) + limit + 1).map((job) => ({
+          jobId: job.jobId,
+          url: job.url,
+          company: job.company,
+          role: job.role,
+          applicationChannel: job.applicationChannel,
+          ...(job.discoverySource == null ? {} : { discoverySource: job.discoverySource }),
+          providerUrl: job.providerUrl,
+          firstSeenAt: job.firstSeenAt,
+          lastSeenAt: job.lastSeenAt,
+          contributionCount: jobContributorHashes.get(job.jobId)?.size ?? 0,
+        }));
         return { jobs: jobs.slice(0, limit), hasMore: jobs.length > limit };
+      },
+      async listLive({ limit, cursor }) {
+        const ordered = [...communityJobs.values()]
+          .filter((job) => job.publicationStatus === 'published' && job.reviewStatus === 'maintainer-reviewed')
+          .sort((left, right) => right.lastSeenAt.localeCompare(left.lastSeenAt) || right.jobId.localeCompare(left.jobId));
+        const start = cursor == null ? 0 : ordered.findIndex((job) => job.lastSeenAt < cursor.lastSeenAt || (job.lastSeenAt === cursor.lastSeenAt && job.jobId < cursor.jobId));
+        const jobs = ordered.slice(Math.max(0, start), Math.max(0, start) + limit + 1).map((job) => ({
+          jobId: job.jobId,
+          url: job.url,
+          company: job.company,
+          role: job.role,
+          applicationChannel: job.applicationChannel,
+          ...(job.discoverySource == null ? {} : { discoverySource: job.discoverySource }),
+          providerUrl: job.providerUrl,
+          firstSeenAt: job.firstSeenAt,
+          lastSeenAt: job.lastSeenAt,
+          contributionCount: jobContributorHashes.get(job.jobId)?.size ?? 0,
+          livenessStatus: job.livenessStatus ?? 'unknown',
+          lastCheckedAt: job.lastCheckedAt ?? null,
+          closedAt: job.closedAt ?? null,
+        }));
+        return { jobs: jobs.slice(0, limit), hasMore: jobs.length > limit };
+      },
+      async updateLiveness(jobId, { status, checkedAt, closedAt }) {
+        const current = communityJobs.get(jobId);
+        if (!current) return;
+        communityJobs.set(jobId, {
+          ...current,
+          livenessStatus: status,
+          lastCheckedAt: checkedAt,
+          closedAt,
+        });
       },
     },
     POSTHOG_FETCH: async (url, options) => {
@@ -189,6 +239,118 @@ test('community job reads rate-limit a secret-derived client bucket without reta
   assert.equal(bindings.sourceReadRateLimitKeys.length, 1);
   assert.match(bindings.sourceReadRateLimitKeys[0], /^jobs:[0-9a-f]{64}$/);
   assert.equal(bindings.sourceReadRateLimitKeys[0].includes('203.0.113.42'), false);
+});
+
+test('/v1/jobs freezes the legacy job object keys without liveness fields', async () => {
+  const bindings = env();
+  const installationId = '11111111-1111-4111-8111-111111111111';
+  const job = {
+    url: 'https://job-boards.greenhouse.io/example/jobs/1234567',
+    company: 'Example',
+    role: 'Staff Engineer',
+    applicationChannel: 'greenhouse',
+    discoverySource: 'job-board',
+  };
+  await jobContribution(bindings, installationId, job);
+  const jobId = [...bindings.communityJobs.keys()][0];
+  Object.assign(bindings.communityJobs.get(jobId), {
+    publicationStatus: 'published',
+    reviewStatus: 'maintainer-reviewed',
+    livenessStatus: 'open',
+    lastCheckedAt: '2026-10-01T00:00:00.000Z',
+    closedAt: null,
+  });
+
+  const body = await (await worker.fetch(new Request('https://relay.example.com/v1/jobs?limit=1'), bindings)).json();
+  assert.deepEqual(Object.keys(body.jobs[0]).sort(), [
+    'applicationChannel',
+    'company',
+    'contributionCount',
+    'discoverySource',
+    'firstSeenAt',
+    'jobId',
+    'lastSeenAt',
+    'providerUrl',
+    'role',
+    'url',
+  ]);
+  assert.equal('livenessStatus' in body.jobs[0], false);
+  assert.equal('lastCheckedAt' in body.jobs[0], false);
+  assert.equal('closedAt' in body.jobs[0], false);
+});
+
+test('/v1/jobs/live returns liveness fields and uses a distinct rate-limit scope', async () => {
+  const bindings = env();
+  const installationId = '11111111-1111-4111-8111-111111111111';
+  const job = {
+    url: 'https://job-boards.greenhouse.io/example/jobs/1234567',
+    company: 'Example',
+    role: 'Staff Engineer',
+    applicationChannel: 'greenhouse',
+    discoverySource: 'job-board',
+  };
+  await jobContribution(bindings, installationId, job);
+  const jobId = [...bindings.communityJobs.keys()][0];
+  Object.assign(bindings.communityJobs.get(jobId), {
+    publicationStatus: 'published',
+    reviewStatus: 'maintainer-reviewed',
+    livenessStatus: 'closed',
+    lastCheckedAt: '2026-10-02T00:00:00.000Z',
+    closedAt: '2026-10-02T00:00:00.000Z',
+  });
+
+  const response = await worker.fetch(new Request('https://relay.example.com/v1/jobs/live?limit=1', {
+    headers: { 'cf-connecting-ip': '203.0.113.99' },
+  }), bindings);
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.version, 1);
+  assert.equal(body.jobs.length, 1);
+  assert.equal(body.jobs[0].livenessStatus, 'closed');
+  assert.equal(body.jobs[0].lastCheckedAt, '2026-10-02T00:00:00.000Z');
+  assert.equal(body.jobs[0].closedAt, '2026-10-02T00:00:00.000Z');
+  assert.deepEqual(Object.keys(body.jobs[0]).sort(), [
+    'applicationChannel',
+    'closedAt',
+    'company',
+    'contributionCount',
+    'discoverySource',
+    'firstSeenAt',
+    'jobId',
+    'lastCheckedAt',
+    'lastSeenAt',
+    'livenessStatus',
+    'providerUrl',
+    'role',
+    'url',
+  ]);
+  assert.match(bindings.sourceReadRateLimitKeys[0], /^jobs-live:[0-9a-f]{64}$/);
+});
+
+test('scheduled handler runs a liveness sweep and updates the job store', async () => {
+  const bindings = env();
+  const installationId = '11111111-1111-4111-8111-111111111111';
+  const job = {
+    url: 'https://job-boards.greenhouse.io/example/jobs/424242',
+    company: 'Example',
+    role: 'Platform Engineer',
+    applicationChannel: 'greenhouse',
+  };
+  await jobContribution(bindings, installationId, job);
+  const jobId = [...bindings.communityJobs.keys()][0];
+  Object.assign(bindings.communityJobs.get(jobId), {
+    publicationStatus: 'published',
+    reviewStatus: 'maintainer-reviewed',
+  });
+
+  bindings.LIVENESS_FETCH = async (url) => {
+    assert.equal(url, 'https://boards-api.greenhouse.io/v1/boards/example/jobs/424242');
+    return Response.json({ id: 424242, title: 'Platform Engineer', absolute_url: job.url });
+  };
+  await worker.scheduled({}, bindings);
+  assert.equal(bindings.communityJobs.get(jobId).livenessStatus, 'open');
+  assert.match(bindings.communityJobs.get(jobId).lastCheckedAt, /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(bindings.communityJobs.get(jobId).closedAt, null);
 });
 
 async function contribution(bindings, installationId, source, token = null) {
