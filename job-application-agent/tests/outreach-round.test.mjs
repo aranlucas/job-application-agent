@@ -37,6 +37,7 @@ function application(roundId, company = 'Example') {
     submittedAt: '2026-09-14T10:00:00.000Z',
     approval: 'STANDING AUTHORIZATION',
     answers: {},
+    telemetry: { durationBucket: '2-5m', fieldsFilled: 8, shortAnswerCount: 1, resumeUploaded: true },
   };
 }
 

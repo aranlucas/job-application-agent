@@ -99,4 +99,16 @@ test("extractSessionBindingFields pulls local-only keys", () => {
   assert.equal(fields.browserProfilePath, "/tmp/p");
   assert.equal(fields.display, ":99");
   assert.equal(extractSessionBindingFields({ url: "https://example.com" }), null);
+  // display/vncPort/tabHint alone must not activate binding (avoids browserProfilePath_required on attention add)
+  assert.equal(extractSessionBindingFields({
+    url: "https://example.com",
+    display: ":99",
+    vncPort: 5900,
+    tabHint: { urlContains: "/application" },
+  }), null);
+  assert.equal(extractSessionBindingFields({
+    url: "https://example.com",
+    browserProfilePath: "   ",
+    display: ":99",
+  }), null);
 });

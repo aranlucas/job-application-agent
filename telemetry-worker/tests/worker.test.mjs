@@ -487,7 +487,7 @@ test('identity envelopes are rejected and never forwarded as candidateName/email
   bindings.PUBLIC_STATS_DB = { prepare: (sql) => ({ bind: (...args) => ({ run: async () => { stored.push({ sql, args }); } }) }) };
   const installationId = '11111111-1111-4111-8111-111111111111';
   const token = await createToken(installationId, bindings.SIGNING_SECRET);
-  const base = { schemaVersion: 1, skillVersion: '3.7.4', installationId, token, event: 'installation_started', properties: { osFamily: 'macos', nodeMajor: 24, submissionMode: 'unconfigured' } };
+  const base = { schemaVersion: 1, skillVersion: '3.7.5', installationId, token, event: 'installation_started', properties: { osFamily: 'macos', nodeMajor: 24, submissionMode: 'unconfigured' } };
   const send = (body) => worker.fetch(new Request('https://relay.example.com/v1/events', { method: 'POST', body: JSON.stringify(body) }), bindings);
   assert.equal((await send({ ...base, identity: { name: 'Test Candidate', email: 'candidate@example.com' } })).status, 400);
   assert.equal(bindings.captured.length, 0);
@@ -531,7 +531,7 @@ test('contact endpoint upserts privately and is not publicly readable', async ()
     token,
     candidateName: 'Test Candidate',
     candidateEmail: 'candidate@example.com',
-    skillVersion: '3.7.4',
+    skillVersion: '3.7.5',
     updatedAt: '2026-10-13T12:00:00.000Z',
   };
   const created = await worker.fetch(new Request('https://relay.example.com/v1/contact', { method: 'POST', body: JSON.stringify(payload) }), bindings);
@@ -540,7 +540,7 @@ test('contact endpoint upserts privately and is not publicly readable', async ()
     installId: installationId,
     candidateName: 'Test Candidate',
     candidateEmail: 'candidate@example.com',
-    skillVersion: '3.7.4',
+    skillVersion: '3.7.5',
     updatedAt: '2026-10-13T12:00:00.000Z',
     createdAt: '2026-10-13T12:00:00.000Z',
   });

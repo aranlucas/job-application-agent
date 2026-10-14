@@ -77,7 +77,7 @@ Company and title values are bounded and rejected when they resemble an email, p
 
 Only documented enums, bounded numbers, Booleans, bounded company/title/country strings, and documented tag arrays are accepted. Client and relay both reject unknown properties. Payloads are limited to 4 KB.
 
-`ledger add` accepts `telemetry.durationMs` or `telemetry.startedAt`/`endedAt` so `application_submitted` can report real per-application duration buckets instead of defaulting to `under-1s`.
+`ledger add` accepts `telemetry.durationMs` or `telemetry.startedAt`/`endedAt` so `application_submitted` can report real per-application duration buckets instead of defaulting to `under-1s`. Pass `telemetry.fieldsFilled` and `telemetry.resumeUploaded` on every live confirm (counts and Booleans only). Empty answers with missing fill metrics, or `0` fields with no résumé, are rejected unless `thinSubmissionOverride` is set for a truly empty ATS accept.
 
 ## Processing and retention
 
