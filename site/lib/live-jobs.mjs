@@ -142,20 +142,27 @@ export function jobPostingDescription(job) {
   return parts.join(' ');
 }
 
+const LIVE_STATUSES = new Set(['open', 'closed', 'unknown']);
+
 export function communityJobsLiveUpstreamUrl(upstream, requestUrl) {
   let target;
   try { target = new URL(upstream); } catch { throw new Error('invalid upstream'); }
   if (target.protocol !== 'https:' || target.username || target.password) throw new Error('invalid upstream');
-  for (const key of requestUrl.searchParams.keys()) if (!['limit', 'cursor'].includes(key)) throw new Error('invalid query');
+  for (const key of requestUrl.searchParams.keys()) {
+    if (!['limit', 'cursor', 'status'].includes(key)) throw new Error('invalid query');
+  }
   const rawLimit = requestUrl.searchParams.get('limit');
   const limit = rawLimit == null ? 25 : Number(rawLimit);
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error('invalid query');
   const cursor = requestUrl.searchParams.get('cursor');
   if (cursor !== null && (!cursor || cursor.length > 1024)) throw new Error('invalid query');
+  const status = requestUrl.searchParams.get('status');
+  if (status !== null && !LIVE_STATUSES.has(status)) throw new Error('invalid query');
   target.search = '';
   target.hash = '';
   target.searchParams.set('limit', String(limit));
   if (cursor !== null) target.searchParams.set('cursor', cursor);
+  if (status !== null) target.searchParams.set('status', status);
   return target.toString();
 }
 

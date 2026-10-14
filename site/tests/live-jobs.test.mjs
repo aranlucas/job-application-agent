@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   classifyRoleFamily,
+  communityJobsLiveUpstreamUrl,
   filterBoardJobs,
   isListedOpenJob,
   jobIdFromSlug,
@@ -55,6 +56,43 @@ test('board listing hides stale and non-open roles', () => {
 
   const filtered = filterBoardJobs(open, { role: 'Engineering', postedDays: 14, now });
   assert.ok(filtered.every((job) => classifyRoleFamily(job.role) === 'Engineering'));
+});
+
+test('postedDays filter on firstSeenAt can empty the board; any-time keeps verified-open roles', () => {
+  const nowMs = Date.parse('2026-10-14T12:00:00.000Z');
+  const open = [
+    {
+      jobId: 'community-job-aaaaaaaaaaaaaaaa',
+      role: 'Staff Engineer',
+      company: 'Acme',
+      livenessStatus: 'open',
+      lastCheckedAt: '2026-10-14T12:00:00.000Z',
+      firstSeenAt: '2026-08-27T00:00:00.000Z',
+      lastSeenAt: '2026-10-13T00:00:00.000Z',
+    },
+    {
+      jobId: 'community-job-bbbbbbbbbbbbbbbb',
+      role: 'Product Engineer',
+      company: 'Beta',
+      livenessStatus: 'open',
+      lastCheckedAt: '2026-10-14T12:00:00.000Z',
+      firstSeenAt: '2026-10-10T00:00:00.000Z',
+      lastSeenAt: '2026-10-14T00:00:00.000Z',
+    },
+  ];
+  assert.equal(filterBoardJobs(open, { postedDays: 14, now: nowMs }).length, 1);
+  assert.equal(filterBoardJobs(open, { postedDays: 0, now: nowMs }).length, 2);
+});
+
+test('communityJobsLiveUpstreamUrl forwards status=open and rejects bad status', () => {
+  const upstream = 'https://relay.example.com/v1/jobs/live';
+  const url = communityJobsLiveUpstreamUrl(upstream, new URL('https://jobappagent.com/api/community-jobs-live?limit=50&status=open'));
+  assert.match(url, /status=open/);
+  assert.match(url, /limit=50/);
+  assert.throws(
+    () => communityJobsLiveUpstreamUrl(upstream, new URL('https://jobappagent.com/api/community-jobs-live?status=nope')),
+    /invalid query/,
+  );
 });
 
 test('closed job JSON-LD sets validThrough and similar roles exclude self', () => {
