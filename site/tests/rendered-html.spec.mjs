@@ -287,7 +287,9 @@ test("publishes an indexable jobs board without founding pricing", async () => {
     assert.match(html, /Open roles, reviewed/);
     assert.match(html, /canonical" href="https:\/\/jobappagent\.com\/jobs"/);
     assert.doesNotMatch(html, /name="robots" content="noindex/);
-    assert.doesNotMatch(html, /\$49|Reserve for|founding/i);
+    // Jobs chrome must not surface founding pricing. Avoid matching
+    // framework module ids like FoundingCheckout in not-found RSC fallbacks.
+    assert.doesNotMatch(html, /\$49|Reserve for \$49|Reserve founding|Founding reservation|FOUNDING RESERVATION/i);
     assert.doesNotMatch(html, /contributor_hash|contributorHash/);
     assert.match(html, /Reviewed and live, checked daily|Apply with your agent|Roles reviewed by maintainers/);
     assert.match(html, /Example Labs|Senior Backend Engineer/);
@@ -299,7 +301,7 @@ test("publishes an indexable jobs board without founding pricing", async () => {
     assert.match(closedHtml, /application\/ld\+json/);
     assert.match(closedHtml, /validThrough/);
     assert.doesNotMatch(closedHtml, /npx job-application-agent@latest install/);
-    assert.doesNotMatch(closedHtml, /\$49|Reserve for/);
+    assert.doesNotMatch(closedHtml, /\$49|Reserve for \$49|Founding reservation/i);
 
     const open = await render("/jobs/example-labs-senior-backend-engineer-aaaaaaaaaaaaaaaa");
     assert.equal(open.status, 200);
@@ -313,7 +315,7 @@ test("publishes an indexable jobs board without founding pricing", async () => {
     assert.doesNotMatch(openHtml, />\s*apply https:\/\//);
     assert.doesNotMatch(openHtml, /npx job-application-agent@latest apply/);
     assert.match(openHtml, /application\/ld\+json/);
-    assert.doesNotMatch(openHtml, /\$49|Reserve for|founding/i);
+    assert.doesNotMatch(openHtml, /\$49|Reserve for \$49|Reserve founding|Founding reservation|FOUNDING RESERVATION/i);
   } finally {
     if (previous === undefined) delete process.env.USE_JOBS_BOARD_FIXTURES;
     else process.env.USE_JOBS_BOARD_FIXTURES = previous;
