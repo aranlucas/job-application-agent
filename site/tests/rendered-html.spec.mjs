@@ -131,8 +131,14 @@ test("attention invalid/expired copy avoids jargon and points to the latest emai
   assert.match(source, /This link has expired/);
   assert.match(source, /still paused and waiting for your answer/);
   assert.match(source, /Nothing was submitted from this link/);
-  assert.match(source, /Open the latest email from JobAppAgent/);
-  assert.match(source, /id="latest-email"/);
+  assert.match(source, /Find the newest JobAppAgent email/);
+  assert.match(source, /This page cannot open your inbox/);
+  assert.match(source, /Open the inbox where you receive JobAppAgent mail/);
+  assert.match(source, /button button-secondary[^>]*>Go to JobAppAgent home/);
+  assert.match(source, /site-shell/);
+  assert.match(source, /SiteHeader/);
+  assert.match(source, /SiteFooter/);
+  assert.doesNotMatch(source, /Open the latest email from JobAppAgent/);
   assert.doesNotMatch(source, /This attention link is not valid/);
 });
 

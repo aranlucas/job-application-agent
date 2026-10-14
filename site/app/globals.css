@@ -425,10 +425,14 @@ footer a { min-width: 2.75rem; min-height: 2.75rem; margin-left: 1.25rem; paddin
   line-height: 1.55;
 }
 .attention-error-help {
-  margin-top: 1.5rem;
+  margin-top: 1.35rem;
   padding-top: 1.35rem;
   border-top: 1px solid var(--line);
   text-align: left;
+}
+.site-shell .attention-page {
+  flex: 1;
+  width: min(42rem, calc(100% - 3rem));
 }
 .attention-error-help h2 {
   margin: 0 0 .65rem;

@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { SiteFooter, SiteHeader } from "../../components/SiteChrome";
 import { attentionEnv } from "../../../lib/attention-auth";
 import { buyerAttentionStep } from "../../../lib/attention-buyer-flow.mjs";
 import { resolveAttentionDesignFixture } from "../../../lib/attention-design-fixtures.mjs";
@@ -90,23 +91,27 @@ function AttentionError({
   home?: boolean;
   latestEmail?: boolean;
 }) {
-  return <main className="attention-page page-width">
-    <section className="attention-panel attention-error-panel">
-      <h1>{title}</h1>
-      <p>{body}</p>
-      <div className="attention-error-actions">
-        {latestEmail && <a className="button" href="#latest-email">Open the latest email from JobAppAgent</a>}
-        {home && <Link className="button" href="/">Back home</Link>}
-      </div>
-      {latestEmail && <div className="attention-error-help" id="latest-email">
-        <h2>Find the newest JobAppAgent email</h2>
-        <p>This page cannot open your inbox. Use the newest message from JobAppAgent — older links stop working on purpose.</p>
-        <ol>
-          <li>Open the inbox where you receive JobAppAgent mail.</li>
-          <li>Search for JobAppAgent and sort by newest.</li>
-          <li>Open that message and use its Continue applying link.</li>
-        </ol>
-      </div>}
-    </section>
-  </main>;
+  return <div className="site-shell">
+    <SiteHeader />
+    <main className="attention-page page-width">
+      <section className="attention-panel attention-error-panel">
+        <h1>{title}</h1>
+        <p>{body}</p>
+        {latestEmail && <div className="attention-error-help" id="latest-email">
+          <h2>Find the newest JobAppAgent email</h2>
+          <p>This page cannot open your inbox. Use the newest message from JobAppAgent — older links stop working on purpose.</p>
+          <ol>
+            <li>Open the inbox where you receive JobAppAgent mail.</li>
+            <li>Search for JobAppAgent and sort by newest.</li>
+            <li>Open that message and use its Continue applying link.</li>
+          </ol>
+        </div>}
+        <div className="attention-error-actions">
+          {latestEmail && <Link className="button button-secondary" href="/">Go to JobAppAgent home</Link>}
+          {home && <Link className="button" href="/">Back home</Link>}
+        </div>
+      </section>
+    </main>
+    <SiteFooter />
+  </div>;
 }
