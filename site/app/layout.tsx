@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import { DM_Sans, IBM_Plex_Mono, Libre_Baskerville } from "next/font/google";
 import { LandingAnalyticsProvider } from "./components/LandingAnalytics";
+import { JsonLd } from "./components/JsonLd";
+import { siteJsonLdGraph } from "../lib/structured-data.mjs";
 import "./globals.css";
 
 const display = Libre_Baskerville({ variable: "--font-display", subsets: ["latin"], weight: ["400", "700"], style: ["normal", "italic"], display: "swap" });
@@ -23,6 +25,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return <html lang="en"><body className={`${display.variable} ${body.variable} ${mono.variable}`}>
+    <JsonLd data={siteJsonLdGraph()} />
     <LandingAnalyticsProvider>{children}</LandingAnalyticsProvider>
   </body></html>;
 }

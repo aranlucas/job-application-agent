@@ -1,7 +1,10 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
-export const metadata: Metadata = { title: "Privacy" };
+export const metadata: Metadata = {
+  title: "Privacy",
+  alternates: { canonical: "https://jobappagent.com/privacy" },
+};
 
 export default function Privacy() {
   return <main className="legal page-width">

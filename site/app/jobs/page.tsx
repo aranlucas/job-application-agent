@@ -6,7 +6,8 @@ export const metadata: Metadata = {
   title: "Published jobs",
   description: "Community-sourced job listings reviewed for publication.",
   robots: { index: false, follow: false },
-  alternates: { canonical: "https://stats.jobappagent.com/jobs" },
+  // Apex self-canonical (aligns with open /jobs draft); page stays noindex until that ships.
+  alternates: { canonical: "https://jobappagent.com/jobs" },
 };
 
 export default function JobsPage() {

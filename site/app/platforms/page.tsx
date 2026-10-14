@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import catalog from "../../../job-application-agent/platforms.json";
+import { JsonLd } from "../components/JsonLd";
+import { breadcrumbListJsonLd } from "../../lib/structured-data.mjs";
 import styles from "./platforms.module.css";
 
 export const metadata: Metadata = {
@@ -10,7 +12,12 @@ export const metadata: Metadata = {
 };
 
 export default function Platforms() {
+  const breadcrumbs = breadcrumbListJsonLd([
+    { name: "Home", path: "/" },
+    { name: "Platforms", path: "/platforms" },
+  ]);
   return <main className={`legal page-width ${styles.guide}`}>
+    <JsonLd data={breadcrumbs} />
     <Link className="legal-back" href="/">← Back to the product</Link>
     <p className="eyebrow">Open-source agent · setup guides</p>
     <h1>Your job search.<br />Your choice of agent.</h1>

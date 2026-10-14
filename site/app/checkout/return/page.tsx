@@ -3,7 +3,11 @@ import { redirect } from "next/navigation";
 import { PaymentReturnStatus } from "../../components/PaymentReturnStatus";
 import { canonicalCheckoutReturnUrl, isCheckoutDesignSuccess } from "../../../lib/payment-core.mjs";
 
-export const metadata: Metadata = { title: "Payment status", robots: { index: false, follow: false } };
+export const metadata: Metadata = {
+  title: "Payment status",
+  robots: { index: false, follow: false },
+  alternates: { canonical: "https://jobappagent.com/checkout/return" },
+};
 
 export default async function CheckoutReturnPage({
   searchParams,
