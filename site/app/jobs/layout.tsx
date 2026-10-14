@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 
 /**
  * Jobs surfaces opt out of landing pageview analytics via JobsAnalyticsGate.
- * Chrome matches the rest of the site (shared SiteHeader / SiteFooter).
+ * Shared SiteHeader/SiteFooter with foundingCta={false} (no Reserve/$49 on /jobs*).
  */
 export default function JobsLayout({ children }: { children: ReactNode }) {
   return (

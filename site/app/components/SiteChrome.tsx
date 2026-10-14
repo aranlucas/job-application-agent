@@ -1,20 +1,32 @@
 import Link from "next/link";
 import { FoundingCheckout } from "./FoundingCheckout";
 
-export function SiteHeader({ community = false }: { community?: boolean }) {
+export function SiteHeader({
+  community = false,
+  foundingCta = true,
+}: {
+  community?: boolean;
+  /** When false, omit Reserve for $49 (+ GST note). Used on /jobs* surfaces. */
+  foundingCta?: boolean;
+}) {
   return <>
-    <nav className="site-nav" aria-label="Primary navigation"><div className="nav-inner page-width">
-      <Link className="brand" href={community ? "https://jobappagent.com" : "/#top"} aria-label="JobAppAgent home">
-        <span className="brand-mark" aria-hidden="true" />
-        <span className="brand-lockup"><span className="brand-name">JobApp<span>Agent</span></span><span className="brand-tagline">A calmer job search</span></span>
-      </Link>
-      <div className="nav-links">
-        {community
-          ? <><a href="https://jobappagent.com">Product</a><a href="#methodology">Methodology</a></>
-          : <><a href="https://stats.jobappagent.com">Community</a><Link href="/#process">How it works</Link><Link href="/#boundaries">Boundaries</Link></>}
-        <FoundingCheckout compact />
+    <nav
+      className={`site-nav${foundingCta ? "" : " site-nav-jobs"}`}
+      aria-label="Primary navigation"
+    >
+      <div className="nav-inner page-width">
+        <Link className="brand" href={community ? "https://jobappagent.com" : "/#top"} aria-label="JobAppAgent home">
+          <span className="brand-mark" aria-hidden="true" />
+          <span className="brand-lockup"><span className="brand-name">JobApp<span>Agent</span></span><span className="brand-tagline">A calmer job search</span></span>
+        </Link>
+        <div className="nav-links">
+          {community
+            ? <><a href="https://jobappagent.com">Product</a><a href="#methodology">Methodology</a></>
+            : <><a href="https://stats.jobappagent.com">Community</a><Link href="/#process">How it works</Link><Link href="/#boundaries">Boundaries</Link></>}
+          {foundingCta ? <FoundingCheckout compact /> : null}
+        </div>
       </div>
-    </div></nav>
+    </nav>
   </>;
 }
 

@@ -165,6 +165,8 @@ test("product SiteHeader nav works from non-home pages", async () => {
   assert.match(source, /href="\/#boundaries"/);
   assert.match(source, /<Link href="\/#process">How it works<\/Link>/);
   assert.match(source, /<Link href="\/#boundaries">Boundaries<\/Link>/);
+  assert.match(source, /foundingCta = true/);
+  assert.match(source, /foundingCta \? <FoundingCheckout compact \/> : null/);
 });
 
 test("jobs empty state offers Install JobAppAgent when unfiltered", async () => {
@@ -280,11 +282,6 @@ test("platform pages publish BreadcrumbList JSON-LD and apex canonicals", async 
 test("publishes an indexable jobs board with shared site chrome", async () => {
   const previous = process.env.USE_JOBS_BOARD_FIXTURES;
   process.env.USE_JOBS_BOARD_FIXTURES = "1";
-  const mainHtml = (html) => {
-    const match = html.match(/<main\b[^>]*>([\s\S]*?)<\/main>/i);
-    assert.ok(match, "expected a <main> landmark");
-    return match[1];
-  };
   try {
     const response = await render("/jobs");
     assert.equal(response.status, 200);
@@ -292,14 +289,13 @@ test("publishes an indexable jobs board with shared site chrome", async () => {
     assert.match(html, /Open roles, reviewed/);
     assert.match(html, /canonical" href="https:\/\/jobappagent\.com\/jobs"/);
     assert.doesNotMatch(html, /name="robots" content="noindex/);
-    // Shared SiteHeader matches other pages (Community / How it works / Boundaries + founding CTA).
+    // Shared SiteHeader nav without founding CTA on /jobs*.
     assert.match(html, /stats\.jobappagent\.com/);
     assert.match(html, /How it works/);
     assert.match(html, /Boundaries/);
-    assert.match(html, /Reserve for \$49/);
-    // Jobs <main> content stays free of founding offer copy (header CTA is fine).
-    const listMain = mainHtml(html);
-    assert.doesNotMatch(listMain, /\$49|Reserve for \$49|Reserve founding|Founding reservation|FOUNDING RESERVATION/i);
+    assert.match(html, /site-nav-jobs/);
+    // Whole page must stay free of founding pricing (header included).
+    assert.doesNotMatch(html, /\$49|Reserve for \$49|Reserve founding|Founding reservation|FOUNDING RESERVATION/i);
     assert.doesNotMatch(html, /contributor_hash|contributorHash/);
     assert.match(html, /Reviewed and live, checked daily|Apply with your agent|Roles reviewed by maintainers/);
     assert.match(html, /Example Labs|Senior Backend Engineer/);
@@ -313,7 +309,7 @@ test("publishes an indexable jobs board with shared site chrome", async () => {
     assert.match(closedHtml, /application\/ld\+json/);
     assert.match(closedHtml, /validThrough/);
     assert.doesNotMatch(closedHtml, /npx job-application-agent@latest install/);
-    assert.doesNotMatch(mainHtml(closedHtml), /\$49|Reserve for \$49|Founding reservation/i);
+    assert.doesNotMatch(closedHtml, /\$49|Reserve for \$49|Founding reservation/i);
 
     const open = await render("/jobs/example-labs-senior-backend-engineer-aaaaaaaaaaaaaaaa");
     assert.equal(open.status, 200);
@@ -327,7 +323,7 @@ test("publishes an indexable jobs board with shared site chrome", async () => {
     assert.doesNotMatch(openHtml, />\s*apply https:\/\//);
     assert.doesNotMatch(openHtml, /npx job-application-agent@latest apply/);
     assert.match(openHtml, /application\/ld\+json/);
-    assert.doesNotMatch(mainHtml(openHtml), /\$49|Reserve for \$49|Reserve founding|Founding reservation|FOUNDING RESERVATION/i);
+    assert.doesNotMatch(openHtml, /\$49|Reserve for \$49|Reserve founding|Founding reservation|FOUNDING RESERVATION/i);
   } finally {
     if (previous === undefined) delete process.env.USE_JOBS_BOARD_FIXTURES;
     else process.env.USE_JOBS_BOARD_FIXTURES = previous;

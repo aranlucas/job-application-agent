@@ -114,7 +114,7 @@ export function JobsBoard({
 
   return (
     <div className={styles.container}>
-      <SiteHeader />
+      <SiteHeader foundingCta={false} />
       <main className={`page-width ${styles.page}`}>
         <header className={styles.header}>
           <h1>Open roles, reviewed.</h1>

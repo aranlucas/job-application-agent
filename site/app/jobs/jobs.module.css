@@ -92,8 +92,9 @@
 
 .jobRow {
   display: grid;
-  grid-template-columns: minmax(7rem, 11rem) minmax(0, 1.4fr) minmax(7rem, 11rem) minmax(6rem, 8.5rem) auto;
-  gap: 0.85rem;
+  /* Narrower company/location/date so titles stay one line at 1024. */
+  grid-template-columns: minmax(5.5rem, 8rem) minmax(0, 1.8fr) minmax(5.5rem, 9rem) minmax(5rem, 7rem) auto;
+  gap: 0.75rem;
   align-items: center;
   padding: 0.95rem 1.35rem;
   border-top: 1px solid var(--line);
@@ -118,6 +119,7 @@
   font-weight: 500;
   font-size: 0.98rem;
   color: var(--ink);
+  white-space: nowrap;
 }
 
 .location,
@@ -147,10 +149,13 @@
   align-items: center;
 }
 
-/* Align shared secondary button in the jobs list grid without restyling it. */
+/* Outline secondary on list rows; tighter inline padding so titles keep room at 1024. */
 .rowApply {
   justify-self: end;
   white-space: nowrap;
+  padding-inline: 14px;
+  font-size: 0.8rem;
+  min-height: 2.5rem;
 }
 
 .mobileCard {

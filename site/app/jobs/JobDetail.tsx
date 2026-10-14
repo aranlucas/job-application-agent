@@ -120,7 +120,7 @@ export function JobDetail({
 
   return (
     <div className={styles.container}>
-      <SiteHeader />
+      <SiteHeader foundingCta={false} />
       <main className={`page-width ${styles.page}`}>
         <script
           type="application/ld+json"
