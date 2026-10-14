@@ -12,7 +12,7 @@ import { createSecretStore, migrateLegacyStateDir, resolveStateDir } from './sec
 import { SourceCommunityClient } from './source-community-client.mjs';
 import { normalizeCommunityJob, normalizeCommunitySource } from './source-community-schema.mjs';
 import { TelemetryClient } from './telemetry-client.mjs';
-import { jobIdentity } from './telemetry-schema.mjs';
+import { jobIdentity, sanitizeTelemetryErrorMessage, sanitizeTelemetryFieldLabel } from './telemetry-schema.mjs';
 import { CloudStateClient, defaultCloudConfigPath, enableCloudUpdateGuard, saveCloudConfig } from './cloud-state-client.mjs';
 import {
   SESSION_BINDING_ATTENTION_KEYS,
@@ -42,7 +42,7 @@ const INTERVIEW_QUALITIES = new Set(['promising', 'viable', 'weak', 'dead']);
 const FAILURE_POINTS = new Set(['role-scope', 'company-problem', 'constraints', 'interviewer', 'process', 'unknown']);
 const APPROVALS = new Set(['APPROVE SUBMIT', 'STANDING AUTHORIZATION']);
 const MODES = new Set(['review-each', 'routine-auto']);
-const TELEMETRY_DURATIONS = new Set(['under-1s', '1-5s', '5-30s', '30-60s', '1-2m', '2-5m', '5-15m', '15m-plus']);
+const TELEMETRY_DURATIONS = new Set(['under-1s', '1-5s', '5-30s', '30-60s', '1-2m', '2-5m', '5-15m', '15m-plus', 'unknown']);
 const AUTONOMY_SCOPES = Object.freeze(['discover', 'assess', 'fill', 'upload-resume', 'submit', 'send-recruiting-email', 'record-ledger', 'record-outcomes', 'cleanup-tabs', 'open-improvement-pr']);
 const AUTONOMY_HARD_STOPS = Object.freeze(['authentication', 'mfa', 'captcha', 'legal-attestation', 'demographic', 'government-id', 'unverifiable-claim', 'ambiguous-authorization', 'ambiguous-compensation']);
 const ATTENTION_STAGES = new Set(['discovery', 'assessment', 'application', 'contact', 'resume', 'questions', 'legal', 'demographic', 'review', 'submission', 'confirmation', 'outcome', 'answers', 'upload']);
@@ -117,25 +117,87 @@ export function commandCategory([area, action]) {
   if (area === 'ledger' && action === 'outcome') return 'outcome';
   if (area === 'ledger' && action === 'review') return 'review';
   if (area === 'ledger' && action === 'review-ack') return 'review';
-  if (area === 'ledger') return 'apply';
+  if (area === 'ledger' && (action === 'delivery' || action === 'retry' || action === 'deliveries')) return 'delivery';
+  if (area === 'ledger' && action === 'check') return 'check';
+  if (area === 'ledger') return 'other';
   if (area === 'telemetry') return 'telemetry';
   if (area === 'autonomy') return 'profile';
   if (area === 'round') return 'round';
   if (area === 'sources') return 'search';
-  if (area === 'attention' || area === 'friction') return 'batch';
+  if (area === 'attention') return 'attention';
+  if (area === 'friction') return 'friction';
+  if (area === 'cloud') return 'other';
   return 'other';
 }
 
-function telemetryStage(command) {
-  return ({ search: 'discovery', assess: 'assessment', apply: 'submission', outcome: 'outcome', review: 'review', resume: 'resume', profile: 'contact', onboard: 'contact' })[command] ?? 'application';
+function telemetryStage(command, error) {
+  const message = String(error?.message ?? '');
+  if (/^Usage:/i.test(message)) return 'application';
+  if (/cloud|lease|intent/i.test(message)) return 'application';
+  return ({
+    search: 'discovery',
+    assess: 'assessment',
+    apply: 'submission',
+    check: 'submission',
+    delivery: 'outcome',
+    outcome: 'outcome',
+    review: 'review',
+    resume: 'resume',
+    profile: 'contact',
+    onboard: 'contact',
+    attention: 'application',
+    friction: 'application',
+    batch: 'application',
+    other: 'application',
+  })[command] ?? 'application';
+}
+
+export function telemetryErrorCategory(error) {
+  const message = String(error?.message ?? '');
+  if (/^Usage:/i.test(message)) return 'usage';
+  if (/keychain|keyring|secret service|secret-tool|credential manager|dpapi|authentication|login|lease/i.test(message)) return 'auth';
+  // Resume/PDF upload before generic http/network (export errors often include "HTTP").
+  if (/upload|resume|pdf/i.test(message)) return 'upload';
+  if (/network|fetch|http|relay|unavailable/i.test(message)) return 'network';
+  if (/profile|migration|missing or unreadable/i.test(message)) return 'profile';
+  if (/cloud|intent/i.test(message)) return 'cloud';
+  if (/duplicate|ledger|submission|submitted|approval|telemetry\./i.test(message)) return 'submission';
+  if (/invalid|must|required|expected|unsupported/i.test(message)) return 'validation';
+  return 'other';
 }
 
 export function telemetryErrorCode(error) {
   const message = String(error?.message ?? '');
+  if (/^Usage:/i.test(message)) return 'invalid_input';
   if (/keychain|keyring|secret service|secret-tool|credential manager|dpapi|authentication|login/i.test(message)) return 'authentication_required';
-  if (/network|fetch|http/i.test(message)) return 'network_failure';
+  if (/No local cloud lease|lease is recorded|live lease/i.test(message)) return 'authentication_required';
+  // Resume/PDF upload failures before generic network/http matching (messages often include "HTTP").
+  if (/upload failed|Resume export failed|did not contain a valid PDF|Canonical resume/i.test(message)) return 'upload_failed';
+  if (/Cloud state (unavailable|request failed)|network|fetch|http|relay unavailable|upstream/i.test(message)) return 'network_failure';
+  if (/rate.?limit/i.test(message)) return 'rate_limited';
+  if (/missing or unreadable|needs migration|Expected one JSON|Unknown |is invalid|must be|requires |required|expected|unsupported|Hard duplicate|cooldown|follow-up|Usage:/i.test(message)) return 'invalid_input';
   if (/invalid|must|required|expected|unsupported/i.test(message)) return 'invalid_input';
   return 'internal_error';
+}
+
+export function telemetryErrorFieldLabel(error) {
+  const message = String(error?.message ?? '');
+  const match = message.match(/\b((?:entry|profile|job|attention|friction|outcome|coverage|round|candidate)\.[A-Za-z0-9_.]+)\b/);
+  return sanitizeTelemetryFieldLabel(match?.[1]);
+}
+
+export function skillErrorProperties(error, command) {
+  const properties = {
+    errorCode: telemetryErrorCode(error),
+    stage: telemetryStage(command, error),
+    recoverable: true,
+    errorCategory: telemetryErrorCategory(error),
+  };
+  const sanitizedMessage = sanitizeTelemetryErrorMessage(error?.message);
+  if (sanitizedMessage) properties.sanitizedMessage = sanitizedMessage;
+  const fieldLabel = telemetryErrorFieldLabel(error);
+  if (fieldLabel) properties.fieldLabel = fieldLabel;
+  return properties;
 }
 
 function sourceToAts(source) {
@@ -182,9 +244,98 @@ export async function telemetryJobAssessed(job, result) {
   };
 }
 
-async function telemetryApplicationSubmitted(entry, details = {}) {
+const RESUME_ANSWER_KEY = /resume|attachment|cv|curriculum/i;
+export const THIN_SUBMISSION_OVERRIDE = 'THIN SUBMISSION ACKNOWLEDGED';
+
+const ATTENTION_BLOCKER_ALIASES = Object.freeze({
+  login: 'authentication',
+  'log-in': 'authentication',
+  'sign-in': 'authentication',
+  signin: 'authentication',
+  sso: 'authentication',
+});
+
+const ATTENTION_ACTION_ALIASES = Object.freeze({
+  login: 'sign-in',
+  'log-in': 'sign-in',
+  'complete-login': 'sign-in',
+  'upload-resume': 'enable-upload',
+  'resume-upload': 'enable-upload',
+});
+
+/**
+ * Resolve fill metrics for application_submitted without putting answer values in telemetry.
+ * Prefer explicit entry.telemetry counts; fall back to answer *keys* only (labels, not content).
+ */
+export function resolveSubmissionFillMetrics(entry, details = {}) {
+  const answers = Object.keys(entry?.answers ?? {});
+  const hasExplicitFields = details.fieldsFilled != null;
+  const hasExplicitResume = details.resumeUploaded != null;
+  const hasExplicitShort = details.shortAnswerCount != null;
+  const resumeFromAnswers = answers.some((key) => RESUME_ANSWER_KEY.test(key));
+  const fieldsFilled = hasExplicitFields ? details.fieldsFilled : answers.length;
+  const resumeUploaded = hasExplicitResume ? details.resumeUploaded : resumeFromAnswers;
+  const shortAnswerCount = hasExplicitShort
+    ? details.shortAnswerCount
+    : hasExplicitFields
+      ? Math.max(0, fieldsFilled - (resumeUploaded ? 1 : 0))
+      : answers.filter((key) => !RESUME_ANSWER_KEY.test(key)).length;
+  const metricsSource = (hasExplicitFields || hasExplicitResume)
+    ? 'telemetry'
+    : (answers.length > 0 ? 'answers' : 'empty');
+  return {
+    ...(details.durationBucket ? { durationBucket: details.durationBucket } : {}),
+    fieldsFilled,
+    shortAnswerCount,
+    resumeUploaded: Boolean(resumeUploaded),
+    metricsSource,
+  };
+}
+
+/**
+ * Block ledger add when fill metrics are missing or the submission looks empty.
+ * Fixture / vendor-sandbox applies are exempt. Intentional empty ATS accepts need
+ * thinSubmissionOverride: "THIN SUBMISSION ACKNOWLEDGED".
+ */
+export function assertSubmissionFillGuard(entry, metrics, thinOverride = null) {
+  if (isFixtureOrSandboxApply(entry)) return;
+  if (metrics.metricsSource === 'empty') {
+    throw new Error(
+      'entry.telemetry.fieldsFilled and entry.telemetry.resumeUploaded are required when answers are empty. '
+      + 'Pass integer field counts and a Boolean resumeUploaded only — never field values, paths, or answer text in telemetry.',
+    );
+  }
+  if (metrics.fieldsFilled === 0 && metrics.resumeUploaded !== true) {
+    if (thinOverride !== THIN_SUBMISSION_OVERRIDE) {
+      throw new Error(
+        `Submission looks empty (0 fields filled, no résumé). Fill the form and upload the canonical résumé before ledger add, `
+        + `or pass thinSubmissionOverride: "${THIN_SUBMISSION_OVERRIDE}" only when the ATS truly accepted an empty apply.`,
+      );
+    }
+  }
+}
+
+/**
+ * Build application_submitted analytics. Missing telemetry must not look like an empty form:
+ * send null fill counts + durationBucket "unknown" with telemetrySupplied:false.
+ */
+export async function telemetryApplicationSubmitted(entry, details = {}) {
   const identity = await jobIdentity(entry.url);
-  const answers = Object.keys(entry.answers ?? {});
+  const metrics = resolveSubmissionFillMetrics(entry, details);
+  const telemetrySupplied = details.telemetrySupplied === true;
+  const omitCounts = metrics.metricsSource === 'empty';
+
+  let resolvedDuration = metrics.durationBucket ?? details.durationBucket ?? null;
+  if (resolvedDuration == null) {
+    const startedAt = details.lifecycleStartedAt ?? details.startedAt ?? null;
+    const startedMs = startedAt ? Date.parse(startedAt) : Number.NaN;
+    if (Number.isFinite(startedMs)) {
+      const endedMs = details.endedAt ? Date.parse(details.endedAt) : Date.now();
+      if (Number.isFinite(endedMs)) resolvedDuration = durationBucket(Math.max(0, endedMs - startedMs));
+    }
+  }
+  if (resolvedDuration == null || !TELEMETRY_DURATIONS.has(resolvedDuration)) resolvedDuration = 'unknown';
+
   return {
     event: 'application_submitted',
     properties: {
@@ -192,11 +343,108 @@ async function telemetryApplicationSubmitted(entry, details = {}) {
       company: entry.company,
       title: entry.role,
       ats: sourceToAts(entry.applicationChannel ?? entry.source),
-      durationBucket: details.durationBucket ?? 'under-1s',
-      fieldsFilled: details.fieldsFilled ?? answers.length,
-      shortAnswerCount: details.shortAnswerCount ?? answers.filter((key) => !/resume|attachment/i.test(key)).length,
-      resumeUploaded: details.resumeUploaded ?? answers.some((key) => /resume|attachment/i.test(key)),
+      durationBucket: resolvedDuration,
+      fieldsFilled: omitCounts ? null : metrics.fieldsFilled,
+      shortAnswerCount: omitCounts ? null : metrics.shortAnswerCount,
+      resumeUploaded: omitCounts ? null : Boolean(metrics.resumeUploaded),
       approvalMode: entry.approval === 'STANDING AUTHORIZATION' ? 'routine-auto' : 'review-each',
+      telemetrySupplied,
+    },
+  };
+}
+
+function skipReasonFromAssessment(result) {
+  const gaps = (result.gaps ?? []).join(' ').toLowerCase();
+  if (/closed|stale/i.test(gaps)) return 'closed';
+  if (/location|work mode|remote|excluded location/i.test(gaps)) return 'location';
+  if (/salary/i.test(gaps)) return 'salary';
+  if (/seniority/i.test(gaps)) return 'seniority';
+  if (/eligib|authoriz|excluded by the candidate/i.test(gaps)) return 'ineligible';
+  if (/skill|role family|experience/i.test(gaps)) return 'low-fit';
+  if (result.decision === 'exclude') return 'ineligible';
+  return 'candidate-choice';
+}
+
+export async function telemetryApplicationSkipped(job, result) {
+  if (!job?.url) return null;
+  const identity = await jobIdentity(job.url);
+  return {
+    event: 'application_skipped',
+    properties: {
+      jobHash: identity.jobHash,
+      reason: skipReasonFromAssessment(result),
+      fitScore: result.score,
+      eligibility: String(job.eligibility ?? 'unclear').toLowerCase(),
+    },
+  };
+}
+
+const TELEMETRY_STAGES = new Set(['discovery', 'assessment', 'application', 'contact', 'resume', 'questions', 'legal', 'demographic', 'review', 'submission', 'confirmation', 'outcome']);
+const ATTENTION_BLOCKER_TO_PAUSE_REASON = Object.freeze({
+  authentication: 'login',
+  mfa: 'mfa',
+  captcha: 'captcha',
+  'legal-attestation': 'legal',
+  demographic: 'demographic',
+  'government-id': 'sensitive-id',
+  'ambiguous-authorization': 'eligibility',
+  'ambiguous-compensation': 'compensation',
+  'unverifiable-claim': 'unverifiable',
+  judgment: 'candidate-judgment',
+  video: 'candidate-judgment',
+  upload: 'attachment',
+  'site-error': 'site-error',
+  other: 'other',
+});
+
+function normalizeTelemetryStage(stage) {
+  const value = String(stage ?? 'application').toLowerCase();
+  if (value === 'answers') return 'questions';
+  if (value === 'upload') return 'resume';
+  return TELEMETRY_STAGES.has(value) ? value : 'application';
+}
+
+function pauseReasonFromBlocker(blocker) {
+  return ATTENTION_BLOCKER_TO_PAUSE_REASON[String(blocker ?? '').toLowerCase()] ?? 'other';
+}
+
+function approvalModeFromJob(job, details = {}) {
+  if (details.approvalMode === 'routine-auto' || details.approvalMode === 'review-each') return details.approvalMode;
+  if (job?.approval === 'STANDING AUTHORIZATION') return 'routine-auto';
+  if (job?.submissionMode === 'routine-auto' || job?.submissionMode === 'review-each') return job.submissionMode;
+  return 'review-each';
+}
+
+export async function telemetryApplicationStarted(job, details = {}) {
+  if (!job?.url) return null;
+  const identity = await jobIdentity(job.url);
+  const requiredFieldCount = Number.isInteger(details.requiredFieldCount)
+    ? details.requiredFieldCount
+    : (Number.isInteger(job.requiredFieldCount) ? job.requiredFieldCount : 0);
+  return {
+    event: 'application_started',
+    properties: {
+      jobHash: identity.jobHash,
+      ats: sourceToAts(String(details.ats ?? job.applicationChannel ?? job.source ?? 'other').toLowerCase()),
+      approvalMode: approvalModeFromJob(job, details),
+      requiredFieldCount,
+      resumeRequired: details.resumeRequired === true || job.resumeRequired === true,
+      coverLetterRequired: details.coverLetterRequired === true || job.coverLetterRequired === true,
+      referralPresent: details.referralPresent === true || job.referralPresent === true,
+    },
+  };
+}
+
+export async function telemetryApplicationPaused(item, details = {}) {
+  if (!item?.url) return null;
+  const identity = await jobIdentity(item.url);
+  return {
+    event: 'application_paused',
+    properties: {
+      jobHash: identity.jobHash,
+      ats: sourceToAts(String(details.ats ?? item.ats ?? item.applicationChannel ?? item.source ?? 'other').toLowerCase()),
+      stage: normalizeTelemetryStage(details.stage ?? item.stage),
+      reason: details.reason ?? pauseReasonFromBlocker(item.blocker),
     },
   };
 }
@@ -517,14 +765,33 @@ export function validateLedgerCheckCandidate(input) {
 export function validateSubmissionTelemetry(input) {
   if (input == null) return {};
   const value = object(input, 'entry.telemetry');
-  const allowed = new Set(['durationBucket', 'fieldsFilled', 'shortAnswerCount', 'resumeUploaded']);
+  const allowed = new Set(['durationBucket', 'durationMs', 'startedAt', 'endedAt', 'fieldsFilled', 'shortAnswerCount', 'resumeUploaded']);
   for (const key of Object.keys(value)) if (!allowed.has(key)) throw new Error(`Unknown entry.telemetry property: ${key}.`);
   if (value.durationBucket != null && !TELEMETRY_DURATIONS.has(value.durationBucket)) throw new Error('entry.telemetry.durationBucket is invalid.');
+  if (value.durationMs != null && (!Number.isInteger(value.durationMs) || value.durationMs < 0 || value.durationMs > 86_400_000)) {
+    throw new Error('entry.telemetry.durationMs must be an integer from 0 to 86400000.');
+  }
+  for (const key of ['startedAt', 'endedAt']) {
+    if (value[key] != null && Number.isNaN(Date.parse(value[key]))) throw new Error(`entry.telemetry.${key} must be an ISO date.`);
+  }
   for (const [key, max] of [['fieldsFilled', 500], ['shortAnswerCount', 100]]) {
     if (value[key] != null && (!Number.isInteger(value[key]) || value[key] < 0 || value[key] > max)) throw new Error(`entry.telemetry.${key} must be an integer from 0 to ${max}.`);
   }
   if (value.resumeUploaded != null && typeof value.resumeUploaded !== 'boolean') throw new Error('entry.telemetry.resumeUploaded must be a Boolean.');
-  return Object.fromEntries(Object.entries(value).filter(([, item]) => item != null));
+  const details = Object.fromEntries(Object.entries(value).filter(([, item]) => item != null));
+  if (details.durationBucket == null) {
+    let milliseconds = details.durationMs;
+    if (milliseconds == null && details.startedAt && details.endedAt) {
+      milliseconds = Math.max(0, Date.parse(details.endedAt) - Date.parse(details.startedAt));
+    } else if (milliseconds == null && details.startedAt) {
+      milliseconds = Math.max(0, Date.now() - Date.parse(details.startedAt));
+    }
+    if (Number.isInteger(milliseconds)) details.durationBucket = durationBucket(milliseconds);
+  }
+  delete details.durationMs;
+  delete details.startedAt;
+  delete details.endedAt;
+  return details;
 }
 
 function normalizedText(value) {
@@ -1412,10 +1679,46 @@ async function attentionNotifyHook(event, context = {}) {
   }
 }
 
+function normalizeAttentionBlocker(value) {
+  const raw = string(value, 'attention.blocker', 60).toLowerCase();
+  return ATTENTION_BLOCKER_ALIASES[raw] ?? raw;
+}
+
+function normalizeAttentionActions(value) {
+  const actions = stringArray(value, 'attention.requiredActions', true).map((item) => {
+    const raw = item.toLowerCase();
+    return ATTENTION_ACTION_ALIASES[raw] ?? raw;
+  });
+  return [...new Set(actions)];
+}
+
+function sessionBindingAttentionError(error) {
+  const code = String(error?.message ?? error ?? '');
+  if (/browserProfilePath/i.test(code)) {
+    return new Error('attention.browserProfilePath is required when writing a session binding.');
+  }
+  if (/display/i.test(code)) {
+    return new Error('attention.display must be :99 (fill session); never TigerVNC :1.');
+  }
+  if (/vncPort/i.test(code)) {
+    return new Error('attention.vncPort must be 5900 (fill x11vnc); never 5901.');
+  }
+  if (/jobUrl|tabHint/i.test(code)) {
+    return new Error(`attention session binding is invalid: ${code}.`);
+  }
+  return new Error(`attention session binding is invalid: ${code}.`);
+}
+
 async function attentionAdd(input) {
   const value = object(input, 'attention item');
+  if (Object.hasOwn(value, 'answers')) {
+    throw new Error(
+      'Unknown attention property: answers. Candidate responses must not be stored on attention add; '
+      + 'use the hosted resume signal answers[] / answer bank path instead.',
+    );
+  }
   const allowed = new Set([
-    'roundId', 'applicationId', 'url', 'stage', 'blocker', 'requiredActions', 'createdAt', 'company', 'role',
+    'roundId', 'applicationId', 'url', 'stage', 'blocker', 'requiredActions', 'createdAt', 'company', 'role', 'title',
     // P1.5 judgment packaging (prompts only — never candidate responses).
     'questions', 'postingText', 'aiAssistanceDiscouraged',
     // Local-only session binding hooks — never appended to the cloud attention event.
@@ -1423,14 +1726,15 @@ async function attentionAdd(input) {
   ]);
   for (const key of Object.keys(value)) if (!allowed.has(key)) throw new Error(`Unknown attention property: ${key}.`);
   const stage = string(value.stage, 'attention.stage', 40).toLowerCase();
-  const blocker = string(value.blocker, 'attention.blocker', 60).toLowerCase();
+  const blocker = normalizeAttentionBlocker(value.blocker);
   if (!ATTENTION_STAGES.has(stage)) throw new Error('attention.stage is invalid.');
   if (!ATTENTION_BLOCKERS.has(blocker)) throw new Error('attention.blocker is invalid.');
-  const requiredActions = stringArray(value.requiredActions, 'attention.requiredActions', true).map((item) => item.toLowerCase());
+  const requiredActions = normalizeAttentionActions(value.requiredActions);
   if (requiredActions.length > 8 || requiredActions.some((item) => !REQUIRED_ACTIONS.has(item))) throw new Error('attention.requiredActions must contain only documented actions.');
   const applicationId = string(value.applicationId, 'attention.applicationId', 180);
   let company = typeof value.company === 'string' ? value.company.trim() : '';
   let role = typeof value.role === 'string' ? value.role.trim() : '';
+  if (!role && typeof value.title === 'string') role = value.title.trim();
   if (!company || !role) {
     try {
       const apps = await jsonLines(join(await ensureStateDir(), 'applications.ndjson'));
@@ -1467,16 +1771,21 @@ async function attentionAdd(input) {
 
   let sessionBinding = null;
   if (localBindingFields) {
-    const binding = createSessionBinding({
-      attentionId: event.id,
-      jobUrl: event.url,
-      applicationId: event.applicationId,
-      roundId: event.roundId,
-      createdAt: event.createdAt,
-      questions: event.questions,
-      aiAssistanceDiscouraged: event.aiAssistanceDiscouraged,
-      ...localBindingFields,
-    });
+    let binding;
+    try {
+      binding = createSessionBinding({
+        attentionId: event.id,
+        jobUrl: event.url,
+        applicationId: event.applicationId,
+        roundId: event.roundId,
+        createdAt: event.createdAt,
+        questions: event.questions,
+        aiAssistanceDiscouraged: event.aiAssistanceDiscouraged,
+        ...localBindingFields,
+      });
+    } catch (error) {
+      throw sessionBindingAttentionError(error);
+    }
     const path = sessionBindingPath(await ensureStateDir(), event.id);
     sessionBinding = { path, binding: await writeSessionBindingFile(path, binding) };
   }
@@ -1733,7 +2042,8 @@ async function prepareCloudState(area, action) {
     // New submissions still fail closed because lease and intent operations
     // call the cloud directly. Local checks, research, and observed-result
     // ledger appends can continue and queue their idempotent recovery writes.
-    if (!/^Cloud state unavailable:/.test(error.message)) throw error;
+    // Treat transport and HTTP relay failures the same for automatic recovery.
+    if (!/^Cloud state (unavailable|request failed)/.test(error.message)) throw error;
   }
 }
 
@@ -1833,8 +2143,12 @@ function roundCompletedTelemetry(round) {
   };
 }
 
+async function emitDomainEvent(telemetry, session, event) {
+  if (!event) return;
+  await telemetry.record(event, session);
+}
+
 async function executeCommand([area, action, value], telemetry, session, community) {
-  const domainEvents = [];
   let result;
   if (area === 'cloud') result = await cloudCommand(action, value);
   else if (area === 'profile' && action === 'set' && value === '--stdin') {
@@ -1851,30 +2165,52 @@ async function executeCommand([area, action, value], telemetry, session, communi
   else if (area === 'resume' && action === 'path' && value == null) result = await canonicalResumePath();
   else if (area === 'score' && action === '--stdin') {
     const job = await jsonStdin();
-    result = scoreJob(job, job.target ?? storedProfile());
-    const event = await telemetryJobAssessed(job, result);
-    if (event) domainEvents.push(event);
+    const profile = job.target ?? storedProfile();
+    result = scoreJob(job, profile);
+    await emitDomainEvent(telemetry, session, await telemetryJobAssessed(job, result));
+    if (result.decision === 'skip' || result.decision === 'exclude') {
+      await emitDomainEvent(telemetry, session, await telemetryApplicationSkipped(job, result));
+    } else if (result.decision === 'review') {
+      await emitDomainEvent(telemetry, session, await telemetryApplicationStarted(job, {
+        approvalMode: profile.submissionMode,
+        ats: job.applicationChannel ?? job.source,
+        requiredFieldCount: job.requiredFieldCount,
+        resumeRequired: job.resumeRequired,
+        coverLetterRequired: job.coverLetterRequired,
+        referralPresent: job.referralPresent,
+      }));
+    }
   } else if (area === 'ledger' && action === 'check' && value === '--stdin') result = await ledgerCheck(await jsonStdin());
   else if (area === 'ledger' && action === 'delivery' && value === '--stdin') result = await recordDelivery(await jsonStdin());
   else if (area === 'ledger' && action === 'retry' && value === '--stdin') result = await recordDelivery(await jsonStdin(), true);
   else if (area === 'ledger' && action === 'deliveries') result = await deliveryHistory(value);
   else if (area === 'ledger' && action === 'add' && value === '--stdin') {
     const input = await jsonStdin();
+    const telemetrySupplied = input.telemetry != null;
     const telemetryDetails = validateSubmissionTelemetry(input.telemetry);
     const entry = validateLedgerEntry(input);
+    const fillMetrics = resolveSubmissionFillMetrics(entry, telemetryDetails);
+    assertSubmissionFillGuard(entry, fillMetrics, input.thinSubmissionOverride);
     result = await ledgerAdd(entry, input.duplicateOverride, input.companyReapplyOverride, input.cloudIntentId && input.cloudLeaseId ? { intentId: input.cloudIntentId, leaseId: input.cloudLeaseId } : null);
     result.communityJob = await communityJobsSync(community, { limit: 1, applicationIds: [entry.id] });
     if (!isFixtureOrSandboxApply(entry)) {
-      domainEvents.push(await telemetryApplicationSubmitted(entry, telemetryDetails));
+      const identity = await jobIdentity(entry.url);
+      const lifecycleStartedAt = await telemetry.applicationStartedAt?.(identity.jobHash);
+      await emitDomainEvent(telemetry, session, await telemetryApplicationSubmitted(entry, {
+        ...fillMetrics,
+        telemetrySupplied,
+        ...(lifecycleStartedAt ? { lifecycleStartedAt } : {}),
+      }));
     }
   } else if (area === 'ledger' && action === 'outcome' && value === '--stdin') {
     const outcome = await ledgerOutcome(await jsonStdin());
     result = outcome.result;
-    const event = outcome.result.recorded && !outcome.result.enriched ? await outcomeTelemetry(outcome.application, outcome.event) : null;
-    if (event) domainEvents.push(event);
+    if (outcome.result.recorded && !outcome.result.enriched) {
+      await emitDomainEvent(telemetry, session, await outcomeTelemetry(outcome.application, outcome.event));
+    }
   } else if (area === 'ledger' && action === 'review') {
     result = await ledgerReview();
-    domainEvents.push(reviewTelemetry(result));
+    await emitDomainEvent(telemetry, session, reviewTelemetry(result));
   } else if (area === 'ledger' && action === 'review-ack' && value === '--stdin') {
     result = await ledgerReviewAcknowledge(await jsonStdin());
   } else if (area === 'autonomy' && action === 'grant' && value === '--stdin') result = await autonomyGrant(await jsonStdin());
@@ -1886,7 +2222,7 @@ async function executeCommand([area, action, value], telemetry, session, communi
   else if (area === 'round' && action === 'leads') result = await leadHistory(value);
   else if (area === 'round' && action === 'source' && value === '--stdin') {
     result = await roundSource(await jsonStdin());
-    domainEvents.push({ event: 'source_checked', properties: {
+    await emitDomainEvent(telemetry, session, { event: 'source_checked', properties: {
       sourceId: result.sourceId.startsWith('community-') ? 'community' : result.sourceId,
       status: result.status, reviewedCount: result.reviewedCount, qualifiedCount: result.qualifiedCount,
       ...(result.blocker ? { blocker: result.blocker } : {}),
@@ -1896,7 +2232,7 @@ async function executeCommand([area, action, value], telemetry, session, communi
   else if (area === 'round' && action === 'confirm' && value === '--stdin') result = await roundConfirm(await jsonStdin());
   else if (area === 'round' && action === 'complete' && value === '--stdin') {
     result = await roundComplete(await jsonStdin());
-    if (result.completionRecorded) domainEvents.push(roundCompletedTelemetry(result));
+    if (result.completionRecorded) await emitDomainEvent(telemetry, session, roundCompletedTelemetry(result));
   } else if (area === 'sources' && action === 'list' && value == null) {
     await syncAllCommunityData(community);
     result = await sourcesList({}, await community.list());
@@ -1914,13 +2250,22 @@ async function executeCommand([area, action, value], telemetry, session, communi
     result = await community.configure(value);
     if (value === 'enable') result.communityJobs = await communityJobsSync(community);
   }
-  else if (area === 'attention' && action === 'add' && value === '--stdin') result = await attentionAdd(await jsonStdin());
-  else if (area === 'attention' && action === 'list' && value == null) result = await attentionList();
+  else if (area === 'attention' && action === 'add' && value === '--stdin') {
+    result = await attentionAdd(await jsonStdin());
+    let ats;
+    if (result.applicationId) {
+      try {
+        const apps = await jsonLines(join(await ensureStateDir(), 'applications.ndjson'));
+        const match = apps.find((entry) => entry.id === result.applicationId);
+        if (match) ats = match.applicationChannel ?? match.source;
+      } catch { /* best-effort ATS for pause telemetry only */ }
+    }
+    await emitDomainEvent(telemetry, session, await telemetryApplicationPaused(result, { ats }));
+  } else if (area === 'attention' && action === 'list' && value == null) result = await attentionList();
   else if (area === 'attention' && action === 'resolve' && value === '--stdin') result = await attentionResolve(await jsonStdin());
   else if (area === 'friction' && action === 'record' && value === '--stdin') result = await frictionRecord(await jsonStdin());
   else if (area === 'friction' && action === 'list' && value == null) result = await frictionList();
   else throw new Error('Usage: cloud status|configure --stdin|reconcile [--dry-run]|export [path]|lease-acquire|lease-renew|lease-release|intent-prepare --stdin|intent-sent --stdin|intent-confirm --stdin; profile set|migrate --stdin; profile check|field <name>; resume import <url-or-pdf>|path; score --stdin; ledger check|add|outcome|review-ack --stdin; ledger review; autonomy grant --stdin|status|preview|revoke; round start|source|confirm|complete --stdin|status [round-id]; sources list [--stdin]|jobs [--stdin]|suggest --stdin|pending|sync|sharing status|enable|disable|reset; attention add|resolve --stdin|list; friction record --stdin|list; telemetry status|enable|disable|reset|preview --stdin|record --stdin');
-  for (const event of domainEvents) await telemetry.record(event, session);
   return result;
 }
 
@@ -1946,13 +2291,18 @@ async function main(args) {
     const { runOutreach } = await import('./outreach-cli.mjs');
     return print(await runOutreach(args.slice(1)));
   }
+  // Name/email go only to the private /v1/contact store — never to PostHog event payloads.
   const telemetry = new TelemetryClient({ stateDir: stateDir(), readIdentity: () => {
-    const profile = storedProfileRaw();
-    // Only explicit saved fields; no resume parsing, conversation scraping, or full profile payload.
-    return Object.fromEntries(['name', 'email'].filter((key) => typeof profile[key] === 'string' && profile[key].trim()).map((key) => [key, profile[key]]));
+    try {
+      const profile = storedProfileRaw();
+      return Object.fromEntries(['name', 'email'].filter((key) => typeof profile[key] === 'string' && profile[key].trim()).map((key) => [key, profile[key]]));
+    } catch {
+      return undefined;
+    }
   } });
   const community = new SourceCommunityClient({ stateDir: stateDir() });
   if (area === 'telemetry') {
+    if (action === 'contact' && ['status', 'enable', 'disable'].includes(value) && args.length === 3) return print(await telemetry.configureContact(value));
     if (action === 'identity' && ['status', 'enable', 'disable'].includes(value) && args.length === 3) return print(await telemetry.configureIdentity(value));
     if (['status', 'enable', 'disable', 'reset'].includes(action) && value == null) return print(await telemetry.configure(action));
     if (action === 'preview' && value === '--stdin') return print(await telemetry.preview(await jsonStdin()));
@@ -1961,22 +2311,21 @@ async function main(args) {
       await recordInstallationStart(telemetry, session);
       return print(await telemetry.record(await jsonStdin(), session, { strict: true }));
     }
-    throw new Error('Usage: telemetry status|enable|disable|reset|preview --stdin|record --stdin; telemetry identity status|enable|disable');
+    throw new Error('Usage: telemetry status|enable|disable|reset|preview --stdin|record --stdin; telemetry contact status|enable|disable; telemetry identity status|enable|disable');
   }
-
-  await prepareCloudState(area, action);
 
   const command = commandCategory(args);
   const session = await telemetry.beginCommand(command);
   await recordInstallationStart(telemetry, session);
   const started = Date.now();
   try {
+    await prepareCloudState(area, action);
     const result = await executeCommand(args, telemetry, session, community);
     if (!(area === 'sources' || (area === 'ledger' && action === 'add'))) await communityJobsSync(community).catch(() => null);
     await telemetry.record({ event: 'command_completed', properties: { command, result: 'success', durationBucket: durationBucket(Date.now() - started) } }, session);
     return print(result);
   } catch (error) {
-    await telemetry.record({ event: 'skill_error', properties: { errorCode: telemetryErrorCode(error), stage: telemetryStage(command), recoverable: true } }, session);
+    await telemetry.record({ event: 'skill_error', properties: skillErrorProperties(error, command) }, session);
     await telemetry.record({ event: 'command_completed', properties: { command, result: 'error', durationBucket: durationBucket(Date.now() - started) } }, session);
     throw error;
   }

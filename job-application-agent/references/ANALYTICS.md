@@ -2,14 +2,19 @@
 
 Job Application Agent includes default-enabled, opt-out usage analytics. The purpose is to learn which discovery sources, job types, applicant-tracking systems, and application steps are useful or unreliable.
 
-The first eligible command displays a disclosure. New installations may send that command's events after the disclosure. Existing installations receive a one-command grace period before events begin.
+The first eligible command displays a disclosure and may send that command's events immediately (including upgrades that previously had private state but no `telemetry.json`). Telemetry stays on unless the candidate has explicitly opted out via `telemetry disable`, a `telemetry.opt-out` file in the state directory, or `JOB_APPLICATION_AGENT_TELEMETRY_DISABLED=1` / `JOB_APPLICATION_AGENT_TELEMETRY=0`.
 
-Name and email sharing is also enabled by default, separately from usage analytics. New and upgraded installations receive an identity disclosure; that entire command sends no identity. Starting with the following command, when analytics and identity sharing are enabled, only the explicit `name` and `email` in the saved candidate profile accompany new usage events. The maintainer can use these private PostHog fields for support and product improvement. Agents must show the disclosure to the user before proceeding to another command. Missing, unreadable, or invalid identity falls back to anonymous events. No conversation or résumé extraction is performed by telemetry.
+Candidate name, email, phone, and résumé content are never included in analytics / PostHog event payloads.
+
+Separately, the CLI may upsert the saved profile name and email into a private maintainer contact store (`POST /v1/contact`) once per install and again only when the value changes. Contact sharing is skipped when telemetry is opted out, and has its own opt-out (`telemetry contact disable`, `telemetry.contact.opt-out`, or `JOB_APPLICATION_AGENT_CONTACT_DISABLED=1`).
 
 ## Controls
 
 ```text
 node scripts/job-application.mjs telemetry status
+node scripts/job-application.mjs telemetry contact status
+node scripts/job-application.mjs telemetry contact disable
+node scripts/job-application.mjs telemetry contact enable
 node scripts/job-application.mjs telemetry identity status
 node scripts/job-application.mjs telemetry identity disable
 node scripts/job-application.mjs telemetry identity enable
@@ -20,28 +25,28 @@ node scripts/job-application.mjs telemetry preview --stdin
 node scripts/job-application.mjs telemetry record --stdin
 ```
 
-- `identity disable` stops name/email sharing without disabling usage analytics. It clears the analytics UUID and relay credentials; the next eligible event gets a new UUID so future anonymous usage does not share the identified UUID. The command itself sends nothing.
-- `identity enable` resumes default-on identity sharing after another disclosure grace command when previously opted out. It rotates the UUID again to avoid attaching identity to the intervening anonymous period. It does not re-enable disabled usage analytics.
-- `status` and `identity status` show the UUID and sharing/disclosure flags, never the candidate name/email or relay token. They send nothing and do not acknowledge disclosure.
-- `disable` stops all future analytics collection while preserving the installation ID and identity-sharing preference.
-- `enable` resumes collection with the same installation ID and preserves the identity-sharing preference.
-- `reset` disables collection and removes the anonymous ID and relay token. Enabling later creates a new identity.
-- `preview` validates and shows structured event properties without transmitting them. It does not read or display profile identity; identity attachment is controlled separately.
-- `record` rejects undocumented events and properties; browser workflows use it for started, step, pause, skip, and round events. Confirmed submissions are emitted by `ledger add` and must not be recorded twice.
+- `contact disable` / `contact enable` control the private contact store only. Contact payloads are never attached to PostHog events.
+- `identity disable` / `identity enable` are compatibility aliases for the contact controls.
+- `status`, `contact status`, and `identity status` show the UUID and sharing/disclosure flags, never candidate name/email or relay tokens. They send nothing.
+- `disable` stops all future analytics collection and contact sharing while preserving the installation ID, and writes an explicit opt-out marker.
+- `enable` resumes collection with the same installation ID and clears the telemetry opt-out marker.
+- `reset` disables collection and removes the anonymous ID, relay token, and queued events. Enabling later creates a new identity.
+- `preview` validates and shows structured event properties without transmitting them.
+- `record` rejects undocumented events and properties; browser workflows may still use it for step events and as a fallback for lifecycle events. `score` emits `application_started` on `review` and `application_skipped` on skip/exclude. `attention add` emits `application_paused`. Confirmed submissions are emitted by `ledger add`. Duplicate started/paused/submitted events for the same job attempt are ignored.
 - `status`, `disable`, `reset`, and `preview` never transmit an event. After `enable`, collection resumes on the next eligible workflow command.
 - Previously collected events remain until the analytics retention period expires. Disabling or resetting does not issue a historical-deletion request.
 
-Telemetry is best effort. It has no offline queue, uses a short network timeout, and never changes the result of a job-application command.
+Telemetry is best effort. Failed sends are written to a bounded on-disk queue (size and age limited) and retried on the next command, with modest per-request retry/backoff. Network failures never change the result of a job-application command. Set `JOB_APPLICATION_AGENT_TELEMETRY_DEBUG=1` to log drop reasons.
 
 Community sharing is a separate default-enabled feature with independent `sources sharing status|enable|disable|reset` controls. Confirmed applications contribute bounded public job metadata, while repeatable discovery sources use maintainer review. Neither sends analytics events nor stores a raw contributor identity with a record; a record-scoped HMAC is used only for deduplication and unique-system counting. See [`SOURCES.md`](SOURCES.md) for the exact public metadata contracts.
 
 ## Identity boundary
 
-The only candidate identity fields allowed are the explicitly saved name and email, under the separately disclosed opt-out control above. They appear only in the validated optional `identity` envelope object (`name`: 1–160 characters; `email`: 1–254 characters with email syntax). Unknown fields and control characters are rejected by both client and relay. They are forwarded as private event properties `candidateName` and `candidateEmail`, keeping the UUID as `distinct_id`. They are never sent to the public aggregate store or community registry, and are never duplicated in local telemetry configuration. Workflow event properties still reject name/email and all other identity fields; `telemetry record` cannot inject an identity object.
+Analytics / PostHog events never include candidate name, email, phone, exact address, profile URLs, candidate location, work authorization, personal compensation or compensation floor, target profile or thresholds, resume or attachments, must-have evidence or coverage details, rejection reasons, prompts, responses, job descriptions, form questions, drafted answers, notes, passwords, MFA, CAPTCHA, legal or demographic answers, browser data, IP address, request headers, user agent, or raw error messages.
 
-Analytics never includes phone, exact address, profile URLs, candidate location, work authorization, personal compensation or compensation floor, target profile or thresholds, resume or attachments, must-have evidence or coverage details, rejection reasons, prompts, responses, job descriptions, form questions, drafted answers, notes, passwords, MFA, CAPTCHA, legal or demographic answers, browser data, IP address, request headers, user agent, or raw error messages.
+The private contact endpoint may store only the explicitly saved profile `name` and `email` (plus install ID, skill version, and timestamps) in `PRIVATE_CONTACTS_DB.install_contacts`. That table is never read by `/v1/jobs`, `/api/public-stats`, or other public routes.
 
-Opt-out prevents future identity collection; it does not delete or anonymize previously collected events. Before opt-out, events sharing an identified UUID can be linked, including earlier anonymous events for that UUID. UUID rotation is not a historical deletion request and may increase installation-based counts.
+Optional `skill_error` fields may include a short `sanitizedMessage` and `fieldLabel` after stripping emails, phones, query-bearing URLs, and secrets. They never include résumé text or free-form candidate answers.
 
 Structured job context may include company, role title, canonical destination domain, a SHA-256 hash of the job URL after removing query parameters and fragments, bounded discovery source, ATS/application channel, job country, work mode, employment type, seniority, role family, published salary band, fit score, match/gap categories, workflow stages, field categories, pause reasons, submission result, outcome, bounded interview quality, and bounded interview failure point.
 
@@ -56,7 +61,7 @@ Company and title values are bounded and rejected when they resemble an email, p
 | Event | Structured properties |
 |---|---|
 | `installation_started` | OS family, Node major version, submission mode |
-| `command_completed` | Command category, result, duration bucket |
+| `command_completed` | Command category (`onboard`, `search`, `assess`, `apply`, `check`, `delivery`, `attention`, `friction`, `round`, `outcome`, `review`, `resume`, `profile`, `telemetry`, `other`; legacy `batch` still accepted), result, duration bucket |
 | `source_checked` | Allowlisted packaged source ID or `community`, searched/blocked status, reviewed/qualified counts, optional bounded blocker |
 | `job_discovered` | Company, title, job hash/domain, ATS/source, job country, work mode, seniority, employment type, role family, published salary band |
 | `job_assessed` | Company, title, job hash/domain, ATS, fit score, eligibility, decision, match/gap tags |
@@ -64,13 +69,17 @@ Company and title values are bounded and rejected when they resemble an email, p
 | `application_step` | Job hash, ATS, stage, field category, retry count, duration bucket |
 | `application_paused` | Job hash, ATS, stage, bounded reason |
 | `application_skipped` | Job hash, bounded reason, fit score, eligibility |
-| `application_submitted` | Company, title, job hash/domain, ATS, duration, fields filled, short-answer count, resume-upload Boolean, approval mode |
+| `application_submitted` | Company, title, job hash/domain, ATS, duration bucket (or `unknown`), fields filled / short-answer count / résumé Boolean (or `null` when telemetry was omitted), approval mode, `telemetrySupplied` |
 | `round_completed` | Requested/submitted/assessed/skipped/paused/error counts, duration bucket; optional attempted/searched/blocked source counts, maximum source share percentage, bounded concentration reason. `submittedCount` and `assessedCount` are ledger application totals only and never include attached outreach. |
 | `outcome_recorded` | Company, title, job hash/domain, ATS, outcome, days since submission, optional bounded interview quality/failure point |
 | `review_generated` | Canonical unique-submission and outcome counts, review-due Boolean |
-| `skill_error` | Stable error code, workflow stage, ATS/job hash when available, recoverable Boolean |
+| `skill_error` | Stable error code, workflow stage, recoverable Boolean; optional ATS/job hash, `errorCategory`, sanitized message, field label |
 
 Only documented enums, bounded numbers, Booleans, bounded company/title/country strings, and documented tag arrays are accepted. Client and relay both reject unknown properties. Payloads are limited to 4 KB.
+
+`ledger add` accepts `telemetry.durationMs` or `telemetry.startedAt`/`endedAt` so `application_submitted` can report a real per-application duration bucket. When those are absent, the CLI uses a locally remembered `application_started` timestamp for the same job hash when available; otherwise it sends `durationBucket: "unknown"` (never a fabricated `under-1s`). Pass `telemetry.fieldsFilled` and `telemetry.resumeUploaded` on every live confirm (counts and Booleans only). If the agent omits the telemetry block entirely, analytics send `fieldsFilled`/`shortAnswerCount`/`resumeUploaded` as `null` with `telemetrySupplied: false` rather than fake zeros. Empty answers with missing fill metrics, or `0` fields with no résumé, are rejected for live `ledger add` unless `thinSubmissionOverride` is set for a truly empty ATS accept.
+
+Command categories map CLI areas accurately: `ledger add` → `apply`; `ledger check` → `check`; `ledger delivery`/`retry`/`deliveries` → `delivery`; `attention *` → `attention`; `friction *` → `friction`. Legacy `batch` remains schema-valid for queued historical events only.
 
 ## Processing and retention
 
@@ -78,7 +87,7 @@ Only documented enums, bounded numbers, Booleans, bounded company/title/country 
 - PostHog US Cloud stores personless events with `$process_person_profile: false`.
 - Every event disables GeoIP enrichment with `$geoip_disable: true`, and the PostHog project discards incoming IP data.
 - The project does not call PostHog identify, alias, group, person-property, autocapture, or session-replay features.
-- Installation IDs remain stable until reset or an identity-sharing boundary change. An identified UUID is pseudonymous, not anonymous.
+- Installation IDs remain stable until reset. Historical events may still contain `candidateName` / `candidateEmail` from skill versions 3.4.0–3.7.2; new events never include them.
 - The product retention policy is 24 months and dashboards are private. Dashboard queries exclude data older than 24 months.
 - A public usage dashboard exposes only fixed aggregate metrics. It never exposes raw events or anonymous installation IDs, rolls segment counts below three into `other`, and caches results at the edge for 15 minutes.
 - After PostHog accepts an event, the relay best-effort increments a separate Cloudflare D1 store containing daily counters and HMAC-derived installation hashes. The public endpoint reads only this aggregate store; it has no PostHog read credential.
@@ -87,4 +96,4 @@ Only documented enums, bounded numbers, Booleans, bounded company/title/country 
 
 ## Release ordering
 
-Deploy the relay with optional identity-envelope support before releasing the CLI. Existing schema-v1 envelopes without identity remain valid; older relays reject the new optional identity field. Then release the CLI and updated disclosures together. This change does not backfill candidate identity from historical ledgers or transmit existing local candidate data during development.
+Deploy the relay (which rejects unused `identity` envelope fields) before or with the CLI release. Existing schema-v1 envelopes without identity remain valid. Then release the CLI and updated disclosures together.

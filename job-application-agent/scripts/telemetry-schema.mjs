@@ -10,8 +10,9 @@ export const TELEMETRY_MAX_BYTES = 4096;
 const values = (...items) => new Set(items);
 const ATS = values('linkedin', 'greenhouse', 'lever', 'ashby', 'workable', 'comeet', 'workday', 'rippling', 'smartrecruiters', 'google-form', 'company', 'email', 'other');
 const SOURCES = values('direct-company', 'linkedin', 'x', 'hacker-news', 'yc', 'job-board', 'aggregator', 'company', 'email', 'referral', 'user-supplied', 'web-search', 'other');
-const DURATIONS = values('under-1s', '1-5s', '5-30s', '30-60s', '1-2m', '2-5m', '5-15m', '15m-plus');
-const COMMANDS = values('onboard', 'search', 'assess', 'apply', 'batch', 'round', 'outcome', 'review', 'resume', 'profile', 'telemetry', 'other');
+const DURATIONS = values('under-1s', '1-5s', '5-30s', '30-60s', '1-2m', '2-5m', '5-15m', '15m-plus', 'unknown');
+// `batch` remains accepted for historical/queued events; new emits use attention/friction/delivery/check.
+const COMMANDS = values('onboard', 'search', 'assess', 'apply', 'batch', 'attention', 'friction', 'delivery', 'check', 'round', 'outcome', 'review', 'resume', 'profile', 'telemetry', 'other');
 const RESULTS = values('success', 'paused', 'skipped', 'abandoned', 'error');
 const ELIGIBILITY = values('eligible', 'unclear', 'ineligible');
 const DECISIONS = values('review', 'ask', 'skip', 'exclude');
@@ -29,6 +30,7 @@ const OUTCOMES = values('interview', 'rejected', 'offer', 'withdrawn');
 const INTERVIEW_QUALITIES = values('promising', 'viable', 'weak', 'dead');
 const FAILURE_POINTS = values('role-scope', 'company-problem', 'constraints', 'interviewer', 'process', 'unknown');
 const ERROR_CODES = values('invalid_input', 'network_failure', 'relay_unavailable', 'authentication_required', 'site_changed', 'upload_failed', 'submission_unconfirmed', 'rate_limited', 'internal_error');
+const ERROR_CATEGORIES = values('schema_invalid', 'validation', 'profile', 'cloud', 'network', 'auth', 'site', 'upload', 'submission', 'usage', 'other');
 const MATCH_TAGS = values('role_family', 'seniority', 'skills', 'industry', 'location', 'remote', 'salary', 'ai', 'product', 'leadership', 'authorization');
 const GAP_TAGS = values('role_family', 'seniority', 'skills', 'industry', 'location', 'salary_unknown', 'salary_below', 'authorization_unclear', 'sponsorship', 'experience', 'domain', 'other');
 const DISCOVERY_SOURCE_KEYS = values('direct-company-careers', 'linkedin-jobs-feed', 'x-hiring-feed', 'yc-work-at-a-startup', 'yc-company-directory', 'hacker-news-who-is-hiring', 'we-work-remotely', 'a16z-build-jobs', 'engg-space', 'js-guru-jobs', 'linux-careers', 'indeed', 'recruiter-inbound', 'user-supplied-leads', 'community');
@@ -37,9 +39,37 @@ const CONCENTRATION_REASONS = values('stronger-fit', 'alternatives-exhausted', '
 
 const text = (max, identitySafe = false) => ({ kind: 'text', max, identitySafe });
 const integer = (min, max) => ({ kind: 'integer', min, max });
+const nullableInteger = (min, max) => ({ kind: 'nullable-integer', min, max });
 const boolean = { kind: 'boolean' };
+const nullableBoolean = { kind: 'nullable-boolean' };
 const enumValue = (set) => ({ kind: 'enum', set });
 const enumArray = (set, max = 12) => ({ kind: 'enum-array', set, max });
+
+/** Strip emails, phones, query-bearing URLs, and candidate-entered values from error text. */
+export function sanitizeTelemetryErrorMessage(value, { max = 160 } = {}) {
+  if (typeof value !== 'string' || !value.trim()) return undefined;
+  let textValue = value
+    .replace(/[^\s@]+@[^\s@]+\.[^\s@]+/gi, '[redacted-email]')
+    .replace(/(?:\+?\d[\d\s().-]{6,}\d)/g, '[redacted-phone]')
+    .replace(/https?:\/\/[^\s]+/gi, '[redacted-url]')
+    .replace(/\bwww\.[^\s]+/gi, '[redacted-url]')
+    .replace(/\b(?:password|token|secret|authorization|bearer)\b\s*[:=]\s*\S+/gi, '[redacted-secret]')
+    .replace(/[\x00-\x1f\x7f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!textValue) return undefined;
+  if (textValue.length > max) textValue = `${textValue.slice(0, max - 1)}…`;
+  if (containsDirectIdentity(textValue)) return '[redacted]';
+  return textValue;
+}
+
+export function sanitizeTelemetryFieldLabel(value, { max = 80 } = {}) {
+  if (typeof value !== 'string' || !value.trim()) return undefined;
+  let label = value.replace(/[\x00-\x1f\x7f]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (/[^\s@]+@[^\s@]+\.[^\s@]+/i.test(label) || /(?:\+?\d[\d\s().-]{6,}\d)/.test(label) || /https?:\/\//i.test(label)) return undefined;
+  if (label.length > max) label = `${label.slice(0, max - 1)}…`;
+  return label || undefined;
+}
 
 const JOB = {
   company: text(160, true), title: text(200, true), jobHash: { kind: 'hash' }, domain: { kind: 'domain' }, ats: enumValue(ATS),
@@ -55,14 +85,33 @@ export const EVENT_SCHEMAS = {
   application_step: { required: { jobHash: { kind: 'hash' }, ats: enumValue(ATS), stage: enumValue(STAGES), fieldCategory: enumValue(FIELD_CATEGORIES), retryCount: integer(0, 20), durationBucket: enumValue(DURATIONS) } },
   application_paused: { required: { jobHash: { kind: 'hash' }, ats: enumValue(ATS), stage: enumValue(STAGES), reason: enumValue(PAUSE_REASONS) } },
   application_skipped: { required: { jobHash: { kind: 'hash' }, reason: enumValue(SKIP_REASONS), fitScore: integer(0, 100), eligibility: enumValue(ELIGIBILITY) } },
-  application_submitted: { required: { ...JOB, durationBucket: enumValue(DURATIONS), fieldsFilled: integer(0, 500), shortAnswerCount: integer(0, 100), resumeUploaded: boolean, approvalMode: enumValue(APPROVAL_MODES) } },
+  application_submitted: {
+    required: {
+      ...JOB,
+      durationBucket: enumValue(DURATIONS),
+      fieldsFilled: nullableInteger(0, 500),
+      shortAnswerCount: nullableInteger(0, 100),
+      resumeUploaded: nullableBoolean,
+      approvalMode: enumValue(APPROVAL_MODES),
+      telemetrySupplied: boolean,
+    },
+  },
   round_completed: { required: { requestedCount: integer(1, 1000), submittedCount: integer(0, 1000), assessedCount: integer(0, 10000), skippedCount: integer(0, 10000), pausedCount: integer(0, 10000), errorCount: integer(0, 10000), durationBucket: enumValue(DURATIONS) }, optional: { attemptedSourceCount: integer(0, 10000), searchedSourceCount: integer(0, 10000), blockedSourceCount: integer(0, 10000), maxSourceSharePercent: integer(0, 100), concentrationReason: enumValue(CONCENTRATION_REASONS) } },
   outcome_recorded: {
     required: { ...JOB, outcome: enumValue(OUTCOMES), daysSinceSubmission: integer(0, 3650) },
     optional: { interviewQuality: enumValue(INTERVIEW_QUALITIES), failurePoint: enumValue(FAILURE_POINTS) },
   },
   review_generated: { required: { submissionCount: integer(0, 100000), interviewCount: integer(0, 100000), rejectionCount: integer(0, 100000), offerCount: integer(0, 100000), withdrawalCount: integer(0, 100000), reviewDue: boolean } },
-  skill_error: { required: { errorCode: enumValue(ERROR_CODES), stage: enumValue(STAGES), recoverable: boolean }, optional: { ats: enumValue(ATS), jobHash: { kind: 'hash' } } },
+  skill_error: {
+    required: { errorCode: enumValue(ERROR_CODES), stage: enumValue(STAGES), recoverable: boolean },
+    optional: {
+      ats: enumValue(ATS),
+      jobHash: { kind: 'hash' },
+      errorCategory: enumValue(ERROR_CATEGORIES),
+      sanitizedMessage: text(160, true),
+      fieldLabel: text(80, true),
+    },
+  },
 };
 
 export function containsDirectIdentity(value) {
@@ -81,8 +130,18 @@ function validateProperty(name, value, rule) {
     if (!Number.isInteger(value) || value < rule.min || value > rule.max) throw new Error(`${name} must be an integer from ${rule.min} to ${rule.max}.`);
     return value;
   }
+  if (rule.kind === 'nullable-integer') {
+    if (value === null) return null;
+    if (!Number.isInteger(value) || value < rule.min || value > rule.max) throw new Error(`${name} must be null or an integer from ${rule.min} to ${rule.max}.`);
+    return value;
+  }
   if (rule.kind === 'boolean') {
     if (typeof value !== 'boolean') throw new Error(`${name} must be a Boolean.`);
+    return value;
+  }
+  if (rule.kind === 'nullable-boolean') {
+    if (value === null) return null;
+    if (typeof value !== 'boolean') throw new Error(`${name} must be null or a Boolean.`);
     return value;
   }
   if (rule.kind === 'enum') {
@@ -172,16 +231,17 @@ export function createTelemetryEnvelope({ installationId, token, event, properti
   if (!UUID.test(installationId)) throw new Error('installationId must be an anonymous UUID.');
   if (typeof token !== 'string' || token.length < 8 || token.length > 2048) throw new Error('token is invalid.');
   if (typeof skillVersion !== 'string' || !VERSION.test(skillVersion)) throw new Error('skillVersion is invalid.');
+  // Identity envelopes are rejected; analytics never carry candidate name/email.
+  if (identity !== undefined) throw new Error('Unknown telemetry envelope property: identity.');
   const safe = validateEvent(typeof event === 'string' ? { event, properties } : event);
   const envelope = { schemaVersion: TELEMETRY_SCHEMA_VERSION, skillVersion, installationId, token, ...safe };
-  if (identity !== undefined) envelope.identity = validateTelemetryIdentity(identity);
   if (new TextEncoder().encode(JSON.stringify(envelope)).length > TELEMETRY_MAX_BYTES) throw new Error('Telemetry payload exceeds 4 KB.');
   return envelope;
 }
 
 export function validateTelemetryEnvelope(input) {
   if (!input || Array.isArray(input) || typeof input !== 'object') throw new Error('Telemetry payload must be an object.');
-  const allowed = new Set(['schemaVersion', 'skillVersion', 'installationId', 'token', 'event', 'properties', 'identity']);
+  const allowed = new Set(['schemaVersion', 'skillVersion', 'installationId', 'token', 'event', 'properties']);
   for (const key of Object.keys(input)) if (!allowed.has(key)) throw new Error(`Unknown telemetry envelope property: ${key}.`);
   if (input.schemaVersion !== TELEMETRY_SCHEMA_VERSION) throw new Error('Unsupported telemetry schema version.');
   return createTelemetryEnvelope(input);

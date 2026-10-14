@@ -56,10 +56,15 @@ test('documents flexible ledger check lookup as a separate process from outcome'
     assert.match(copy, /look up the row with `ledger check` first/);
     assert.match(copy, /pass the returned `match\.id` to `ledger outcome`/);
     assert.match(copy, /If `match\.id` is absent, stop and ask/);
+    assert.match(copy, /Every live `ledger add` must include a `telemetry` block/);
+    assert.match(copy, /fieldsFilled/);
+    assert.match(copy, /resumeUploaded/);
+    assert.match(copy, /startedAt/);
   }
   assert.match(schemas, /any one identifier set/);
   assert.match(schemas, /Never promote a company\+role match to a hard already-applied/);
   assert.match(schemas, /ledger add` still requires a real job URL/);
+  assert.match(schemas, /telemetry` block is required on live `ledger add`/);
 });
 
 test('documents LIVE_APPLY fixture allowlist for prove/smoke applies', async () => {

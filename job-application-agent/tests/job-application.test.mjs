@@ -7,7 +7,28 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:http';
 
-import { buildReview, commandCategory, durationBucket, migrateProfile, profileStatus, scoreJob, telemetryErrorCode, telemetryJobAssessed, validateLedgerCheckCandidate, validateLedgerEntry, validateProfile, validateSubmissionTelemetry } from '../scripts/job-application.mjs';
+import {
+  assertSubmissionFillGuard,
+  buildReview,
+  commandCategory,
+  durationBucket,
+  migrateProfile,
+  profileStatus,
+  resolveSubmissionFillMetrics,
+  scoreJob,
+  telemetryApplicationPaused,
+  telemetryApplicationSkipped,
+  telemetryApplicationStarted,
+  telemetryApplicationSubmitted,
+  telemetryErrorCategory,
+  telemetryErrorCode,
+  telemetryJobAssessed,
+  THIN_SUBMISSION_OVERRIDE,
+  validateLedgerCheckCandidate,
+  validateLedgerEntry,
+  validateProfile,
+  validateSubmissionTelemetry,
+} from '../scripts/job-application.mjs';
 
 const target = {
   name: 'Test Candidate',
@@ -290,8 +311,88 @@ test('accepts only confirmed submission ledger shapes', () => {
 test('validates structured submission metrics without adding them to the ledger shape', () => {
   const metrics = { durationBucket: '5-15m', fieldsFilled: 14, shortAnswerCount: 2, resumeUploaded: true };
   assert.deepEqual(validateSubmissionTelemetry(metrics), metrics);
+  assert.deepEqual(validateSubmissionTelemetry({ durationMs: 70_000, fieldsFilled: 3, resumeUploaded: false }), {
+    fieldsFilled: 3, resumeUploaded: false, durationBucket: '1-2m',
+  });
+  assert.equal(validateSubmissionTelemetry({ startedAt: '2026-10-13T10:00:00.000Z', endedAt: '2026-10-13T10:08:00.000Z' }).durationBucket, '5-15m');
   assert.throws(() => validateSubmissionTelemetry({ ...metrics, note: 'private text' }), /unknown/i);
   assert.throws(() => validateSubmissionTelemetry({ ...metrics, fieldsFilled: 1.5 }), /integer/i);
+});
+
+test('resolves fill metrics from telemetry counts or answer keys without storing values', () => {
+  assert.deepEqual(resolveSubmissionFillMetrics({ answers: {} }, {}), {
+    fieldsFilled: 0, shortAnswerCount: 0, resumeUploaded: false, metricsSource: 'empty',
+  });
+  assert.equal(resolveSubmissionFillMetrics({
+    answers: { 'Full name': 'redacted', Resume: 'uploaded' },
+  }, {}).fieldsFilled, 2);
+  assert.equal(resolveSubmissionFillMetrics({
+    answers: { 'Full name': 'redacted', Resume: 'uploaded' },
+  }, {}).resumeUploaded, true);
+  assert.deepEqual(resolveSubmissionFillMetrics({ answers: {} }, { fieldsFilled: 12, resumeUploaded: true }), {
+    fieldsFilled: 12, shortAnswerCount: 11, resumeUploaded: true, metricsSource: 'telemetry',
+  });
+});
+
+test('guards empty ledger submissions unless thin override or fixture apply', () => {
+  const live = { applyKind: 'live', answers: {} };
+  assert.throws(() => assertSubmissionFillGuard(live, resolveSubmissionFillMetrics(live, {})), /fieldsFilled/);
+  assert.throws(
+    () => assertSubmissionFillGuard(live, resolveSubmissionFillMetrics(live, { fieldsFilled: 0, resumeUploaded: false })),
+    /looks empty/i,
+  );
+  assert.doesNotThrow(() => assertSubmissionFillGuard(
+    live,
+    resolveSubmissionFillMetrics(live, { fieldsFilled: 0, resumeUploaded: false }),
+    THIN_SUBMISSION_OVERRIDE,
+  ));
+  assert.doesNotThrow(() => assertSubmissionFillGuard(
+    live,
+    resolveSubmissionFillMetrics(live, { fieldsFilled: 9, resumeUploaded: true }),
+  ));
+  assert.doesNotThrow(() => assertSubmissionFillGuard(
+    { applyKind: 'fixture', answers: {} },
+    resolveSubmissionFillMetrics({ answers: {} }, {}),
+  ));
+});
+
+test('blocks ledger add for empty fill metrics without thin override', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'public-job-agent-empty-submit-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const script = fileURLToPath(new URL('../scripts/job-application.mjs', import.meta.url));
+  await writeFile(join(directory, 'telemetry.json'), JSON.stringify({ version: 1, enabled: false, disclosed: true, graceConsumed: true, installationEventPending: false }));
+  const env = isolatedCliEnv(directory);
+  const base = {
+    id: 'empty-submit-role', company: 'Example', role: 'Engineer', url: 'https://jobs.example.com/empty-submit',
+    source: 'lever', score: 80, status: 'submitted', submittedAt: '2026-10-13T18:00:00Z', approval: 'STANDING AUTHORIZATION', answers: {},
+  };
+  const missing = await runCli(script, ['ledger', 'add', '--stdin'], base, env);
+  assert.equal(missing.code, 1);
+  assert.match(missing.stderr, /fieldsFilled/);
+  const zero = await runCli(script, ['ledger', 'add', '--stdin'], {
+    ...base, telemetry: { fieldsFilled: 0, resumeUploaded: false, durationBucket: 'under-1s' },
+  }, env);
+  assert.equal(zero.code, 1);
+  assert.match(zero.stderr, /looks empty/i);
+  const allowed = await runCli(script, ['ledger', 'add', '--stdin'], {
+    ...base,
+    id: 'empty-submit-ack',
+    company: 'Empty Ack Co',
+    role: 'Empty Apply Engineer',
+    url: 'https://jobs.example.com/empty-submit-ack',
+    telemetry: { fieldsFilled: 0, resumeUploaded: false, durationBucket: 'under-1s' },
+    thinSubmissionOverride: THIN_SUBMISSION_OVERRIDE,
+  }, env);
+  assert.equal(allowed.code, 0, allowed.stderr);
+  const filled = await runCli(script, ['ledger', 'add', '--stdin'], {
+    ...base,
+    id: 'filled-submit-role',
+    company: 'Filled Co',
+    role: 'Filled Apply Engineer',
+    url: 'https://jobs.example.com/filled-submit',
+    telemetry: { fieldsFilled: 11, shortAnswerCount: 2, resumeUploaded: true, durationBucket: '5-15m' },
+  }, env);
+  assert.equal(filled.code, 0, filled.stderr);
 });
 
 test('requires review at each ten confirmed submissions', () => {
@@ -334,6 +435,7 @@ test('warns on same-company role matches and serializes concurrent duplicate sub
   const base = {
     company: 'Example', role: 'Senior Product Engineer', url: 'https://jobs.example.com/123', source: 'company', score: 88,
     status: 'submitted', submittedAt: '2026-01-15T10:00:00Z', approval: 'STANDING AUTHORIZATION', answers: {}, employerJobId: 'example:123',
+    telemetry: { durationBucket: '2-5m', fieldsFilled: 8, shortAnswerCount: 1, resumeUploaded: true },
   };
   const [first, second] = await Promise.all([
     runCli(script, ['ledger', 'add', '--stdin'], { ...base, id: 'example-role-1' }, env),
@@ -382,7 +484,7 @@ test('looks up ledger rows without requiring a URL on check', async (t) => {
   const storedUrl = 'https://jobs.example.com/123';
   await writeFile(join(directory, 'applications.ndjson'), `${JSON.stringify({
     id: 'example-role-1', company: 'Example', role: 'Senior Product Engineer', url: storedUrl, source: 'company', score: 88,
-    status: 'submitted', submittedAt: '2026-01-15T10:00:00Z', approval: 'STANDING AUTHORIZATION', answers: {}, employerJobId: 'example:123',
+    status: 'submitted', submittedAt: '2026-01-15T10:00:00Z', approval: 'STANDING AUTHORIZATION', answers: {}, telemetry: { durationBucket: '2-5m', fieldsFilled: 8, shortAnswerCount: 1, resumeUploaded: true }, employerJobId: 'example:123',
   })}\n`);
   const env = isolatedCliEnv(directory);
 
@@ -410,10 +512,10 @@ test('looks up ledger rows without requiring a URL on check', async (t) => {
   const newerUrl = 'https://jobs.example.com/123-new';
   await writeFile(join(directory, 'applications.ndjson'), `${JSON.stringify({
     id: 'example-role-1', company: 'Example', role: 'Senior Product Engineer', url: storedUrl, source: 'company', score: 88,
-    status: 'submitted', submittedAt: '2026-01-15T10:00:00Z', approval: 'STANDING AUTHORIZATION', answers: {}, employerJobId: 'example:123',
+    status: 'submitted', submittedAt: '2026-01-15T10:00:00Z', approval: 'STANDING AUTHORIZATION', answers: {}, telemetry: { durationBucket: '2-5m', fieldsFilled: 8, shortAnswerCount: 1, resumeUploaded: true }, employerJobId: 'example:123',
   })}\n${JSON.stringify({
     id: 'example-role-1b', company: 'Example', role: 'Senior Product Engineer', url: newerUrl, source: 'company', score: 88,
-    status: 'submitted', submittedAt: '2026-02-01T10:00:00Z', approval: 'STANDING AUTHORIZATION', answers: {},
+    status: 'submitted', submittedAt: '2026-02-01T10:00:00Z', approval: 'STANDING AUTHORIZATION', answers: {}, telemetry: { durationBucket: '2-5m', fieldsFilled: 8, shortAnswerCount: 1, resumeUploaded: true },
   })}\n`);
 
   const byCompanyRole = JSON.parse(execFileSync(process.execPath, [script, 'ledger', 'check', '--stdin'], {
@@ -429,10 +531,10 @@ test('looks up ledger rows without requiring a URL on check', async (t) => {
   const staffUrl = 'https://jobs.example.com/staff';
   await writeFile(join(directory, 'applications.ndjson'), `${JSON.stringify({
     id: 'example-senior', company: 'Example', role: 'Senior Software Engineer', url: seniorUrl, source: 'company', score: 88,
-    status: 'submitted', submittedAt: '2026-01-10T10:00:00Z', approval: 'STANDING AUTHORIZATION', answers: {},
+    status: 'submitted', submittedAt: '2026-01-10T10:00:00Z', approval: 'STANDING AUTHORIZATION', answers: {}, telemetry: { durationBucket: '2-5m', fieldsFilled: 8, shortAnswerCount: 1, resumeUploaded: true },
   })}\n${JSON.stringify({
     id: 'example-staff', company: 'Example', role: 'Staff Software Engineer', url: staffUrl, source: 'company', score: 90,
-    status: 'submitted', submittedAt: '2026-02-10T10:00:00Z', approval: 'STANDING AUTHORIZATION', answers: {},
+    status: 'submitted', submittedAt: '2026-02-10T10:00:00Z', approval: 'STANDING AUTHORIZATION', answers: {}, telemetry: { durationBucket: '2-5m', fieldsFilled: 8, shortAnswerCount: 1, resumeUploaded: true },
   })}\n`);
   const exactSenior = JSON.parse(execFileSync(process.execPath, [script, 'ledger', 'check', '--stdin'], {
     input: JSON.stringify({ company: 'Example', role: 'Senior Software Engineer' }), env, encoding: 'utf8',
@@ -443,10 +545,10 @@ test('looks up ledger rows without requiring a URL on check', async (t) => {
 
   await writeFile(join(directory, 'applications.ndjson'), `${JSON.stringify({
     id: 'example-backend', company: 'Example', role: 'Backend Engineer', url: 'https://jobs.example.com/backend', source: 'company', score: 84,
-    status: 'submitted', submittedAt: '2026-01-05T10:00:00Z', approval: 'STANDING AUTHORIZATION', answers: {},
+    status: 'submitted', submittedAt: '2026-01-05T10:00:00Z', approval: 'STANDING AUTHORIZATION', answers: {}, telemetry: { durationBucket: '2-5m', fieldsFilled: 8, shortAnswerCount: 1, resumeUploaded: true },
   })}\n${JSON.stringify({
     id: 'example-frontend', company: 'Example', role: 'Frontend Engineer', url: 'https://jobs.example.com/frontend', source: 'company', score: 85,
-    status: 'submitted', submittedAt: '2026-03-01T10:00:00Z', approval: 'STANDING AUTHORIZATION', answers: {},
+    status: 'submitted', submittedAt: '2026-03-01T10:00:00Z', approval: 'STANDING AUTHORIZATION', answers: {}, telemetry: { durationBucket: '2-5m', fieldsFilled: 8, shortAnswerCount: 1, resumeUploaded: true },
   })}\n`);
   const ambiguousEngineer = JSON.parse(execFileSync(process.execPath, [script, 'ledger', 'check', '--stdin'], {
     input: JSON.stringify({ company: 'Example', role: 'Engineer' }), env, encoding: 'utf8',
@@ -478,7 +580,7 @@ test('looks up ledger rows without requiring a URL on check', async (t) => {
 
   const missingAddUrl = await runCli(script, ['ledger', 'add', '--stdin'], {
     id: 'example-role-2', company: 'Example', role: 'Staff Engineer', source: 'company', score: 80,
-    status: 'submitted', submittedAt: '2026-01-16T10:00:00Z', approval: 'STANDING AUTHORIZATION', answers: {},
+    status: 'submitted', submittedAt: '2026-01-16T10:00:00Z', approval: 'STANDING AUTHORIZATION', answers: {}, telemetry: { durationBucket: '2-5m', fieldsFilled: 8, shortAnswerCount: 1, resumeUploaded: true },
   }, env);
   assert.equal(missingAddUrl.code, 1);
   assert.match(missingAddUrl.stderr, /entry\.url must/);
@@ -492,7 +594,7 @@ test('records mail and looks up company+role in separate CLI processes', async (
   const storedUrl = 'https://jobs.example.com/apollo-1';
   await writeFile(join(directory, 'applications.ndjson'), `${JSON.stringify({
     id: 'apollo-role-1', company: 'Apollo', role: 'Staff Engineer', url: storedUrl, source: 'company', score: 90,
-    status: 'submitted', submittedAt: '2026-01-15T10:00:00Z', approval: 'STANDING AUTHORIZATION', answers: {},
+    status: 'submitted', submittedAt: '2026-01-15T10:00:00Z', approval: 'STANDING AUTHORIZATION', answers: {}, telemetry: { durationBucket: '2-5m', fieldsFilled: 8, shortAnswerCount: 1, resumeUploaded: true },
   })}\n`);
   const env = isolatedCliEnv(directory);
   const outcome = JSON.parse(execFileSync(process.execPath, [script, 'ledger', 'outcome', '--stdin'], {
@@ -514,7 +616,7 @@ test('records structured outcomes idempotently without duplicate rows', async (t
   await writeFile(join(directory, 'telemetry.json'), JSON.stringify({ version: 1, enabled: false, disclosed: true, graceConsumed: true, installationEventPending: false }));
   await writeFile(join(directory, 'applications.ndjson'), `${JSON.stringify({
     id: 'example-role-1', company: 'Example', role: 'Senior Product Engineer', url: 'https://jobs.example.com/123', source: 'company', score: 88,
-    status: 'submitted', submittedAt: '2026-01-15T10:00:00Z', approval: 'STANDING AUTHORIZATION', answers: {},
+    status: 'submitted', submittedAt: '2026-01-15T10:00:00Z', approval: 'STANDING AUTHORIZATION', answers: {}, telemetry: { durationBucket: '2-5m', fieldsFilled: 8, shortAnswerCount: 1, resumeUploaded: true },
   })}\n`);
   const env = isolatedCliEnv(directory);
   const outcome = { id: 'example-role-1', status: 'rejected', occurredAt: '2026-01-20T09:00:00Z', note: 'No sponsorship' };
@@ -537,7 +639,7 @@ test('records bounded interview quality and failure-point enrichment idempotentl
   await writeFile(join(directory, 'telemetry.json'), JSON.stringify({ version: 1, enabled: false, disclosed: true, graceConsumed: true, installationEventPending: false }));
   await writeFile(join(directory, 'applications.ndjson'), `${JSON.stringify({
     id: 'example-role-1', company: 'Example', role: 'Staff Product Engineer', url: 'https://jobs.example.com/123', source: 'company', score: 91,
-    status: 'submitted', submittedAt: '2026-01-15T10:00:00Z', approval: 'STANDING AUTHORIZATION', answers: {},
+    status: 'submitted', submittedAt: '2026-01-15T10:00:00Z', approval: 'STANDING AUTHORIZATION', answers: {}, telemetry: { durationBucket: '2-5m', fieldsFilled: 8, shortAnswerCount: 1, resumeUploaded: true },
   })}\n`);
   const env = isolatedCliEnv(directory);
   const base = { id: 'example-role-1', status: 'interview', occurredAt: '2026-01-20T09:00:00Z' };
@@ -562,11 +664,11 @@ test('records bounded interview quality and failure-point enrichment idempotentl
 test('builds canonical mature-cohort reviews and honors explicit acknowledgement', () => {
   const old = Array.from({ length: 20 }, (_, index) => ({
     id: `old-${index}`, company: `Company ${index}`, role: 'Senior Engineer', url: `https://jobs.example.com/${index}`,
-    status: 'submitted', submittedAt: '2025-12-01T10:00:00Z', source: 'company', score: 80, approval: 'STANDING AUTHORIZATION', answers: {},
+    status: 'submitted', submittedAt: '2025-12-01T10:00:00Z', source: 'company', score: 80, approval: 'STANDING AUTHORIZATION', answers: {}, telemetry: { durationBucket: '2-5m', fieldsFilled: 8, shortAnswerCount: 1, resumeUploaded: true },
   }));
   const recent = Array.from({ length: 2 }, (_, index) => ({
     id: `recent-${index}`, company: `Recent ${index}`, role: 'Staff Engineer', url: `https://jobs.example.com/recent-${index}`,
-    status: 'submitted', submittedAt: '2026-01-19T10:00:00Z', source: 'company', score: 85, approval: 'STANDING AUTHORIZATION', answers: {},
+    status: 'submitted', submittedAt: '2026-01-19T10:00:00Z', source: 'company', score: 85, approval: 'STANDING AUTHORIZATION', answers: {}, telemetry: { durationBucket: '2-5m', fieldsFilled: 8, shortAnswerCount: 1, resumeUploaded: true },
   }));
   const duplicate = { ...old[0], id: 'old-0-duplicate', url: 'https://another-ats.example.com/requisition/old-0' };
   const outcomes = [
@@ -603,7 +705,7 @@ test('builds canonical mature-cohort reviews and honors explicit acknowledgement
 test('preserves interview quality after a later final outcome', () => {
   const applications = [{
     id: 'role-1', company: 'Example', role: 'Staff Engineer', url: 'https://jobs.example.com/role-1',
-    status: 'submitted', submittedAt: '2025-12-01T10:00:00Z', source: 'company', score: 90, approval: 'STANDING AUTHORIZATION', answers: {},
+    status: 'submitted', submittedAt: '2025-12-01T10:00:00Z', source: 'company', score: 90, approval: 'STANDING AUTHORIZATION', answers: {}, telemetry: { durationBucket: '2-5m', fieldsFilled: 8, shortAnswerCount: 1, resumeUploaded: true },
   }];
   const outcomes = [
     { id: 'role-1', status: 'interview', occurredAt: '2025-12-10T10:00:00Z', interviewQuality: 'promising' },
@@ -622,7 +724,7 @@ test('acknowledges a generated review only through the explicit CLI command', as
   await writeFile(join(directory, 'telemetry.json'), JSON.stringify({ version: 1, enabled: false, disclosed: true, graceConsumed: true, installationEventPending: false }));
   const entries = Array.from({ length: 10 }, (_, index) => ({
     id: `role-${index}`, company: `Company ${index}`, role: 'Senior Engineer', url: `https://jobs.example.com/${index}`,
-    source: 'company', score: 80, status: 'submitted', submittedAt: '2026-01-01T10:00:00Z', approval: 'STANDING AUTHORIZATION', answers: {},
+    source: 'company', score: 80, status: 'submitted', submittedAt: '2026-01-01T10:00:00Z', approval: 'STANDING AUTHORIZATION', answers: {}, telemetry: { durationBucket: '2-5m', fieldsFilled: 8, shortAnswerCount: 1, resumeUploaded: true },
   }));
   await writeFile(join(directory, 'applications.ndjson'), `${entries.map(JSON.stringify).join('\n')}\n`);
   const env = isolatedCliEnv(directory);
@@ -639,7 +741,13 @@ test('acknowledges a generated review only through the explicit CLI command', as
 
 test('maps commands and durations to bounded telemetry categories', () => {
   assert.equal(commandCategory(['ledger', 'add', '--stdin']), 'apply');
+  assert.equal(commandCategory(['ledger', 'check', '--stdin']), 'check');
+  assert.equal(commandCategory(['ledger', 'delivery', '--stdin']), 'delivery');
+  assert.equal(commandCategory(['ledger', 'retry', '--stdin']), 'delivery');
+  assert.equal(commandCategory(['ledger', 'deliveries']), 'delivery');
   assert.equal(commandCategory(['ledger', 'outcome', '--stdin']), 'outcome');
+  assert.equal(commandCategory(['attention', 'add', '--stdin']), 'attention');
+  assert.equal(commandCategory(['friction', 'record', '--stdin']), 'friction');
   assert.equal(commandCategory(['score', '--stdin']), 'assess');
   assert.equal(commandCategory(['sources', 'list']), 'search');
   assert.equal(durationBucket(700), 'under-1s');
@@ -647,6 +755,46 @@ test('maps commands and durations to bounded telemetry categories', () => {
   assert.equal(durationBucket(2_000_000), '15m-plus');
   assert.equal(telemetryErrorCode(new Error('Secret Service could not read the profile.')), 'authentication_required');
   assert.equal(telemetryErrorCode(new Error('secret-tool is not installed.')), 'authentication_required');
+  assert.equal(telemetryErrorCode(new Error('Usage: cloud status|configure')), 'invalid_input');
+  assert.equal(telemetryErrorCategory(new Error('Usage: cloud status|configure')), 'usage');
+  assert.equal(commandCategory(['cloud', 'status']), 'other');
+  assert.equal(telemetryErrorCode(new Error('The stored profile needs migration. Run profile check, then profile migrate --stdin.')), 'invalid_input');
+  assert.equal(telemetryErrorCode(new Error('Hard duplicate blocked: matching canonical URL.')), 'invalid_input');
+  assert.equal(telemetryErrorCode(new Error('No local cloud lease is recorded. Run cloud lease-acquire.')), 'authentication_required');
+  assert.equal(telemetryErrorCode(new Error('Cloud state request failed (503): upstream')), 'network_failure');
+  assert.equal(telemetryErrorCode(new Error('Cloud state unavailable: fetch failed')), 'network_failure');
+  assert.equal(telemetryErrorCode(new Error('Resume export failed with HTTP 500.')), 'upload_failed');
+});
+
+test('application_submitted uses null/unknown when telemetry is omitted', async () => {
+  const entry = {
+    company: 'Example', role: 'Engineer', url: 'https://jobs.example.com/null-telemetry',
+    source: 'lever', approval: 'STANDING AUTHORIZATION', answers: {},
+  };
+  const missing = await telemetryApplicationSubmitted(entry, { telemetrySupplied: false });
+  assert.equal(missing.properties.telemetrySupplied, false);
+  assert.equal(missing.properties.fieldsFilled, null);
+  assert.equal(missing.properties.shortAnswerCount, null);
+  assert.equal(missing.properties.resumeUploaded, null);
+  assert.equal(missing.properties.durationBucket, 'unknown');
+
+  const fromLifecycle = await telemetryApplicationSubmitted(entry, {
+    telemetrySupplied: false,
+    lifecycleStartedAt: new Date(Date.now() - 90_000).toISOString(),
+  });
+  assert.equal(fromLifecycle.properties.durationBucket, '1-2m');
+  assert.equal(fromLifecycle.properties.fieldsFilled, null);
+
+  const supplied = await telemetryApplicationSubmitted(entry, {
+    telemetrySupplied: true,
+    fieldsFilled: 9,
+    resumeUploaded: true,
+    shortAnswerCount: 2,
+    durationBucket: '5-15m',
+  });
+  assert.equal(supplied.properties.telemetrySupplied, true);
+  assert.equal(supplied.properties.fieldsFilled, 9);
+  assert.equal(supplied.properties.durationBucket, '5-15m');
 });
 
 test('builds a structured assessment event without description or candidate profile data', async () => {
@@ -676,9 +824,8 @@ test('telemetry CLI controls are private and reset removes anonymous credentials
   assert.equal(identityDisabled.identityEnabled, false);
   assert.equal(identityDisabled.enabled, false);
   const identityEnabled = JSON.parse(execFileSync(process.execPath, [script, 'telemetry', 'identity', 'enable'], { env, encoding: 'utf8' }));
-  assert.equal(identityEnabled.identityEnabled, true);
+  assert.equal(identityEnabled.identityEnabled, false);
   assert.equal(identityEnabled.enabled, false);
-  assert.equal(identityEnabled.identityDisclosed, false);
   if (process.platform !== 'win32') assert.equal((await stat(join(directory, 'telemetry.json'))).mode & 0o777, 0o600);
 });
 
@@ -717,7 +864,104 @@ test('CLI emits bounded source coverage without private evidence or attribution'
   assert.equal(JSON.stringify(captured).includes(sourceId), false);
 });
 
-test('CLI attaches only explicit saved name/email after disclosure and opt-out continues anonymous usage', async (t) => {
+test('builds started, paused, and skipped application telemetry without PII', async () => {
+  const job = { ...matchingJob, url: 'https://jobs.example.com/roles/42?utm=1', eligibility: 'eligible', applicationChannel: 'greenhouse' };
+  const started = await telemetryApplicationStarted(job, {
+    approvalMode: 'routine-auto',
+    requiredFieldCount: 9,
+    resumeRequired: true,
+    coverLetterRequired: false,
+    referralPresent: false,
+  });
+  assert.equal(started.event, 'application_started');
+  assert.equal(started.properties.ats, 'greenhouse');
+  assert.equal(started.properties.approvalMode, 'routine-auto');
+  assert.equal(started.properties.requiredFieldCount, 9);
+  assert.equal(started.properties.jobHash.length, 64);
+  assert.equal(JSON.stringify(started).includes('utm=1'), false);
+
+  const skipped = await telemetryApplicationSkipped(job, scoreJob({ ...job, postingStatus: 'closed' }, target));
+  assert.equal(skipped.event, 'application_skipped');
+  assert.equal(skipped.properties.reason, 'closed');
+
+  const paused = await telemetryApplicationPaused({
+    url: job.url,
+    stage: 'answers',
+    blocker: 'legal-attestation',
+    applicationChannel: 'workday',
+  });
+  assert.equal(paused.event, 'application_paused');
+  assert.equal(paused.properties.stage, 'questions');
+  assert.equal(paused.properties.reason, 'legal');
+  assert.equal(paused.properties.ats, 'workday');
+});
+
+test('score review emits application_started and attention add emits application_paused', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'job-agent-lifecycle-telemetry-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const captured = [];
+  const server = createServer(async (request, response) => {
+    let raw = '';
+    for await (const chunk of request) raw += chunk;
+    captured.push(JSON.parse(raw));
+    response.setHeader('content-type', 'application/json');
+    response.end(JSON.stringify(request.url === '/v1/install'
+      ? { installationId: crypto.randomUUID(), token: 'synthetic-relay-token', expiresAt: '2099-01-01T00:00:00Z' }
+      : { accepted: true }));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  await writeFile(join(directory, 'telemetry.json'), JSON.stringify({
+    version: 1,
+    enabled: true,
+    disclosed: true,
+    graceConsumed: true,
+    installationEventPending: false,
+    contactEnabled: false,
+    installationId: crypto.randomUUID(),
+    token: 'synthetic-token',
+    tokenExpiresAt: '2099-01-01T00:00:00Z',
+  }));
+  const preload = `import cp from 'node:child_process'; import { syncBuiltinESMExports } from 'node:module'; Object.defineProperty(process, 'platform', { value: 'linux' }); cp.execFileSync = (file, args) => { if (file === 'secret-tool' && args[0] === 'lookup') return ${JSON.stringify(JSON.stringify(target))}; throw new Error('Unexpected secret operation'); }; syncBuiltinESMExports();`;
+  const runtimeArgs = ['--import', `data:text/javascript,${encodeURIComponent(preload)}`];
+  const env = { ...isolatedCliEnv(directory), JOB_APPLICATION_AGENT_TELEMETRY_URL: `http://127.0.0.1:${server.address().port}` };
+  const script = fileURLToPath(new URL('../scripts/job-application.mjs', import.meta.url));
+
+  const scored = await runCli(script, ['score', '--stdin'], {
+    ...matchingJob,
+    url: 'https://jobs.example.com/apply/lifecycle-started',
+    requiredFieldCount: 6,
+    resumeRequired: true,
+    coverLetterRequired: false,
+    referralPresent: false,
+  }, env, runtimeArgs);
+  assert.equal(scored.code, 0, scored.stderr);
+  const started = captured.find((body) => body.event === 'application_started');
+  assert.ok(started, JSON.stringify(captured));
+  assert.equal(started.properties.ats, 'greenhouse');
+  assert.equal(started.properties.approvalMode, 'review-each');
+  assert.equal(started.properties.requiredFieldCount, 6);
+  assert.equal(started.properties.resumeRequired, true);
+  assert.equal(JSON.stringify(started).includes('lifecycle-started'), false);
+
+  const beforePause = captured.length;
+  const paused = await runCli(script, ['attention', 'add', '--stdin'], {
+    roundId: 'round-lifecycle',
+    applicationId: 'app-lifecycle',
+    url: 'https://jobs.example.com/apply/lifecycle-paused',
+    stage: 'review',
+    blocker: 'captcha',
+    requiredActions: ['complete-captcha'],
+  }, env, runtimeArgs);
+  assert.equal(paused.code, 0, paused.stderr);
+  const pauseEvent = captured.slice(beforePause).find((body) => body.event === 'application_paused');
+  assert.ok(pauseEvent, JSON.stringify(captured.slice(beforePause)));
+  assert.equal(pauseEvent.properties.stage, 'review');
+  assert.equal(pauseEvent.properties.reason, 'captcha');
+  assert.equal(pauseEvent.properties.ats, 'other');
+});
+
+test('CLI never attaches candidate name/email/phone to analytics events', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'job-agent-identity-cli-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const captured = [];
@@ -738,20 +982,20 @@ test('CLI attaches only explicit saved name/email after disclosure and opt-out c
   const run = (args) => runCli(script, args, undefined, env, runtimeArgs);
   const first = await run(['profile', 'check']);
   assert.equal(first.code, 0, first.stderr);
-  assert.match(first.stderr, /name and email sharing is enabled by default/i);
   assert.ok(captured.length > 0);
   assert.ok(captured.every(({ body }) => body.identity === undefined));
-  const second = await run(['profile', 'check']);
-  assert.equal(second.code, 0, second.stderr);
-  const identified = captured.at(-1).body;
-  assert.deepEqual(identified.identity, { name: target.name, email: target.email });
-  assert.equal(JSON.stringify(identified).includes(target.phone), false);
-  assert.equal(JSON.stringify(identified).includes(target.location), false);
-  const count = captured.length;
-  const optedOut = await run(['telemetry', 'identity', 'disable']);
-  assert.equal(optedOut.code, 0, optedOut.stderr);
-  assert.equal(captured.length, count);
   assert.equal((await run(['profile', 'check'])).code, 0);
-  assert.equal(captured.at(-1).body.identity, undefined);
-  assert.notEqual(captured.at(-1).body.installationId, identified.installationId);
+  const events = captured.filter(({ path }) => path === '/v1/events');
+  const contacts = captured.filter(({ path }) => path === '/v1/contact');
+  assert.ok(events.length > 0);
+  const eventWire = JSON.stringify(events);
+  assert.equal(eventWire.includes(target.name), false);
+  assert.equal(eventWire.includes(target.email), false);
+  assert.equal(eventWire.includes(target.phone), false);
+  assert.equal(eventWire.includes('candidateName'), false);
+  assert.equal(eventWire.includes('candidateEmail'), false);
+  // Contact sharing is allowed only on POST /v1/contact — never on analytics events.
+  assert.ok(contacts.length >= 1);
+  assert.ok(contacts.every(({ body }) => body.candidateName === target.name && body.candidateEmail === target.email));
+  assert.equal(JSON.stringify(contacts).includes(target.phone), false);
 });

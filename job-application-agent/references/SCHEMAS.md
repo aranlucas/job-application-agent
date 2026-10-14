@@ -120,19 +120,23 @@ Add only after visible success confirmation.
   "duplicateOverride": "NEW REQUISITION CONFIRMED",
   "companyReapplyOverride": "CANDIDATE APPROVED EARLY REAPPLICATION",
   "applyKind": "live",
-  "answers": { "Resume": "Canonical resume.pdf" },
+  "answers": { "Full name": "filled", "Email": "filled", "Resume": "uploaded" },
   "telemetry": {
     "durationBucket": "5-15m",
+    "durationMs": 420000,
     "fieldsFilled": 14,
     "shortAnswerCount": 2,
     "resumeUploaded": true
   },
+  "thinSubmissionOverride": "THIN SUBMISSION ACKNOWLEDGED",
   "cloudIntentId": "intent UUID returned before transmission",
   "cloudLeaseId": "active application-run lease UUID"
 }
 ```
 
-Use `duplicateOverride` only for a verified distinct requisition after a possible-duplicate warning. Use `companyReapplyOverride` only when the candidate explicitly approves a different-role reapplication during the cooldown or after a recorded outcome. Both override phrases and `telemetry` are transient. An accepted company reapplication override stores only `reapplicationApproval: "candidate-explicit"` in the private ledger. Use approval `APPROVE SUBMIT` for per-application approval or `STANDING AUTHORIZATION` when the current request authorizes routine batch submission.
+The `telemetry` block is required on live `ledger add` when `answers` are empty: include at least `fieldsFilled` and `resumeUploaded`, plus `durationMs` or `startedAt`/`endedAt` (record `startedAt` when the form opens). Prefer those counts so analytics stay accurate without putting résumé paths or answer text in the ledger. Answer *keys* may be field labels with redacted markers such as `filled` / `uploaded`; never store the local résumé path, file bytes, or free-form answer content in telemetry. `ledger add` rejects live applies that have neither answers nor fill telemetry, and also rejects `fieldsFilled: 0` with `resumeUploaded: false` unless `thinSubmissionOverride` is exactly `THIN SUBMISSION ACKNOWLEDGED` (only when the ATS truly accepted an empty apply). Fixture / vendor-sandbox applies are exempt. When telemetry is omitted despite answers, `application_submitted` still sets `telemetrySupplied: false` and uses answer-key counts; with neither source, fill fields are `null` and `durationBucket` is `unknown`.
+
+Use `duplicateOverride` only for a verified distinct requisition after a possible-duplicate warning. Use `companyReapplyOverride` only when the candidate explicitly approves a different-role reapplication during the cooldown or after a recorded outcome. Both override phrases, `thinSubmissionOverride`, and `telemetry` are transient. An accepted company reapplication override stores only `reapplicationApproval: "candidate-explicit"` in the private ledger. Use approval `APPROVE SUBMIT` for per-application approval or `STANDING AUTHORIZATION` when the current request authorizes routine batch submission.
 
 `cloudIntentId` and `cloudLeaseId` are transient coordination fields. They are required for the strongest atomic cloud path and are never written into the application payload itself.
 
@@ -179,7 +183,7 @@ Use `round source --stdin` for per-source search/blocker reports and optional at
 }
 ```
 
-Allowed blockers: `authentication`, `mfa`, `captcha`, `legal-attestation`, `demographic`, `government-id`, `ambiguous-authorization`, `ambiguous-compensation`, `unverifiable-claim`, `judgment`, `video`, `upload`, `site-error`, and `other`. Resolve with `{ "id": "attention-..." }`. The queue never stores CAPTCHA, MFA, cookies, demographic answers, or government IDs. Optional `questions[]` (prompts only) and `aiAssistanceDiscouraged` may be packaged for hosted attention UI; candidate responses travel via site signal `answers[]` / answer bank, not the attention.ndjson queue. Optional `company` / `role` are notify-only hints (not persisted on the attention event); the hosted notify path uses profile email when `ATTENTION_NOTIFY_URL` and `ATTENTION_NOTIFY_SECRET` are set. Optional `browserProfilePath` / `display` / `vncPort` / `tabHint` write a **local-only** session binding under `session-bindings/` (never cloud; `display` must be `:99`, `vncPort` must be `5900`). See `site/docs/ATTENTION.md` and `references/agent-box/`.
+Allowed blockers: `authentication`, `mfa`, `captcha`, `legal-attestation`, `demographic`, `government-id`, `ambiguous-authorization`, `ambiguous-compensation`, `unverifiable-claim`, `judgment`, `video`, `upload`, `site-error`, and `other`. Common aliases `login` / `sign-in` / `sso` map to `authentication`. Resolve with `{ "id": "attention-..." }`. The queue never stores CAPTCHA, MFA, cookies, demographic answers, or government IDs. Do not pass `answers` on `attention add` — candidate responses travel via site signal `answers[]` / answer bank, not the attention.ndjson queue. Optional `questions[]` (prompts only) and `aiAssistanceDiscouraged` may be packaged for hosted attention UI. Optional `company` / `role` (or `title` as a role alias) are notify-only hints (not persisted on the attention event); the hosted notify path uses profile email when `ATTENTION_NOTIFY_URL` and `ATTENTION_NOTIFY_SECRET` are set. Optional session binding activates only when `browserProfilePath` is set; `display` / `vncPort` / `tabHint` alone are ignored so partial binding fields do not fail the pause. When binding is written, `display` must be `:99` and `vncPort` must be `5900`. See `site/docs/ATTENTION.md` and `references/agent-box/`.
 
 ## Friction input
 

@@ -20,6 +20,11 @@ test('platform guides work before installation without creating private state', 
     assert.match(guide, /resume path/);
     assert.match(guide, /lease/);
     assert.match(guide, /visible ATS success/);
+    if (platform === 'grok') {
+      assert.match(guide, /Bot template · review mode/);
+      assert.match(guide, /https:\/\/x\.ai\/bot\/0PNQABev0aiAUlhWI83XH/);
+      assert.doesNotMatch(guide, /native share link pending/i);
+    }
   }
   assert.deepEqual(await readdir(homeDir), []);
 });

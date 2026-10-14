@@ -26,6 +26,7 @@ async function jobEntries(): Promise<MetadataRoute.Sitemap> {
   }
 }
 
+/** Apex sitemap only — stats.jobappagent.com has its own sitemap via host routing. */
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   const jobs = await jobEntries();
   return [
@@ -34,7 +35,6 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     ...jobs,
     { url: `${siteUrl}/platforms`, changeFrequency: "monthly", priority: 0.6 },
     ...catalog.platforms.map(platform => ({ url: `${siteUrl}/platforms/${platform.id}`, changeFrequency: "monthly" as const, priority: 0.5 })),
-    { url: "https://stats.jobappagent.com", changeFrequency: "daily", priority: 0.8 },
     { url: `${siteUrl}/privacy`, changeFrequency: "yearly", priority: 0.3 },
     { url: `${siteUrl}/terms`, changeFrequency: "yearly", priority: 0.3 },
   ];

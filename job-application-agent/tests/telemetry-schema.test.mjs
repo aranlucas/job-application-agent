@@ -9,15 +9,14 @@ import {
   validateTelemetryEnvelope,
 } from '../scripts/telemetry-schema.mjs';
 
-test('identity envelope accepts only bounded name and email and keeps old anonymous envelopes compatible', () => {
+test('identity envelopes are rejected from the accepted event payload', () => {
   const input = { installationId: '11111111-1111-4111-8111-111111111111', token: 'signed-token', skillVersion: '3.3.0', event: 'command_completed', properties: { command: 'profile', result: 'success', durationBucket: 'under-1s' } };
-  const envelope = createTelemetryEnvelope({ ...input, identity: { name: ' Test Candidate ', email: ' candidate@example.com ' } });
-  assert.deepEqual(envelope.identity, { name: 'Test Candidate', email: 'candidate@example.com' });
+  assert.throws(() => createTelemetryEnvelope({ ...input, identity: { name: 'Test Candidate', email: 'candidate@example.com' } }), /identity/i);
+  assert.throws(() => validateTelemetryEnvelope({ ...input, schemaVersion: 1, identity: { name: 'Test Candidate', email: 'candidate@example.com' } }), /identity/i);
+  const envelope = createTelemetryEnvelope(input);
+  assert.equal(envelope.identity, undefined);
+  assert.equal('identity' in envelope, false);
   assert.deepEqual(validateTelemetryEnvelope(envelope), envelope);
-  assert.equal(validateTelemetryEnvelope(createTelemetryEnvelope(input)).identity, undefined);
-  for (const identity of [{}, { name: 'x', phone: 'private' }, { email: 'invalid' }, { name: 'x'.repeat(161) }, { email: 'a\nb@example.com' }, { name: 'Test\nPrivate' }, { name: 'Test', resume: 'private' }]) {
-    assert.throws(() => validateTelemetryEnvelope({ ...envelope, identity }), /identity/i);
-  }
 });
 
 const baseJob = {
@@ -112,11 +111,12 @@ test('validates a representative payload for every documented event', () => {
     { event: 'application_step', properties: { jobHash: baseJob.jobHash, ats: 'lever', stage: 'questions', fieldCategory: 'short-answer', retryCount: 1, durationBucket: '1-2m' } },
     { event: 'application_paused', properties: { jobHash: baseJob.jobHash, ats: 'workday', stage: 'legal', reason: 'legal' } },
     { event: 'application_skipped', properties: { jobHash: baseJob.jobHash, reason: 'closed', fitScore: 82, eligibility: 'eligible' } },
-    { event: 'application_submitted', properties: { ...baseJob, durationBucket: '5-15m', fieldsFilled: 14, shortAnswerCount: 2, resumeUploaded: true, approvalMode: 'routine-auto' } },
+    { event: 'application_submitted', properties: { ...baseJob, durationBucket: '5-15m', fieldsFilled: 14, shortAnswerCount: 2, resumeUploaded: true, approvalMode: 'routine-auto', telemetrySupplied: true } },
+    { event: 'application_submitted', properties: { ...baseJob, company: 'Unknown Co', title: 'Unknown Role', jobHash: 'b'.repeat(64), durationBucket: 'unknown', fieldsFilled: null, shortAnswerCount: null, resumeUploaded: null, approvalMode: 'review-each', telemetrySupplied: false } },
     { event: 'round_completed', properties: { requestedCount: 10, submittedCount: 7, assessedCount: 15, skippedCount: 5, pausedCount: 2, errorCount: 1, durationBucket: '15m-plus' } },
     { event: 'outcome_recorded', properties: { ...baseJob, outcome: 'interview', daysSinceSubmission: 4, interviewQuality: 'promising', failurePoint: 'process' } },
     { event: 'review_generated', properties: { submissionCount: 10, interviewCount: 1, rejectionCount: 2, offerCount: 0, withdrawalCount: 0, reviewDue: true } },
-    { event: 'skill_error', properties: { errorCode: 'site_changed', stage: 'application', ats: 'comeet', jobHash: baseJob.jobHash, recoverable: true } },
+    { event: 'skill_error', properties: { errorCode: 'site_changed', stage: 'application', ats: 'comeet', jobHash: baseJob.jobHash, recoverable: true, errorCategory: 'site', sanitizedMessage: 'Site changed during fill', fieldLabel: 'entry.url' } },
   ];
   for (const sample of samples) assert.equal(validateEvent(sample).event, sample.event);
 });

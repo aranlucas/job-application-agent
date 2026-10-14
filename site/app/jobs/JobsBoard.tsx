@@ -107,6 +107,9 @@ export function JobsBoard({
     setPostedDays("14");
   };
 
+  const filtersActive = Boolean(role || location || postedDays !== "14");
+  const registryEmpty = jobs.length === 0;
+
   return (
     <div className={styles.container}>
       <JobsBoardHeader />
@@ -154,20 +157,29 @@ export function JobsBoard({
 
         {filtered.length === 0 ? (
           <div className={styles.empty}>
-            <h2>No open roles match these filters.</h2>
+            <h2>{registryEmpty ? "No open roles right now" : "No open roles match these filters."}</h2>
             <p>
-              The registry is small and only lists roles a maintainer has checked.
-              {widenHint ? <> <strong>{widenHint}.</strong></> : null}
+              {registryEmpty
+                ? "New listings appear here as maintainers review the community registry. You can still let the agent find roles for you."
+                : <>
+                    The registry is small and only lists roles a maintainer has checked.
+                    {widenHint ? <> <strong>{widenHint}.</strong></> : null}
+                  </>}
             </p>
             <div className={styles.emptyActions}>
+              {registryEmpty ? (
+                <a className="button" href="https://jobappagent.com/platforms">Install JobAppAgent</a>
+              ) : null}
               {widenHint ? (
                 <button type="button" className="button" onClick={() => setPostedDays("30")}>
                   Widen to 30 days
                 </button>
               ) : null}
-              <button type="button" className="button button-secondary" onClick={clear}>
-                Clear filters
-              </button>
+              {filtersActive ? (
+                <button type="button" className="button button-secondary" onClick={clear}>
+                  Clear filters
+                </button>
+              ) : null}
             </div>
           </div>
         ) : (

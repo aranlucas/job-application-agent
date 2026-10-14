@@ -80,6 +80,14 @@ test("platform guides render usable prompts and publish only known platform rout
     assert.match(html, /review-each/);
     assert.match(html, /npx job-application-agent@latest install/);
     assert.match(html, /visible ATS success/);
+    if (platform === "grok") {
+      assert.match(html, /class="eyebrow"[^>]*>Grok Bot[\s\S]*?Bot template · review mode[\s\S]*?<h1/i);
+      assert.match(html, /class="button"[^>]*href="https:\/\/x\.ai\/bot\/0PNQABev0aiAUlhWI83XH"/);
+      assert.match(html, /Open the (?:<!-- -->)?Grok Bot(?:<!-- -->)? template/);
+      assert.match(html, /Starts in review mode, where every submit is confirmed\./);
+      assert.doesNotMatch(html, /template<\/a>\s*[—-]\s*[Ss]tarts in review mode/);
+      assert.doesNotMatch(html, /native share link pending/i);
+    }
   }
   const unknown = await render("/platforms/unknown-agent");
   assert.equal(unknown.status, 404);
@@ -114,6 +122,60 @@ test("attention missing-token UI includes a Back home recovery CTA", async () =>
   assert.match(source, /Back home/);
   assert.match(source, /attention-error-actions/);
   assert.match(source, /needs a secure token/i);
+});
+
+test("attention invalid/expired copy avoids jargon and points to the latest email", async () => {
+  const source = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/attention/[id]/page.tsx", import.meta.url), "utf8"),
+  );
+  assert.match(source, /This link has expired/);
+  assert.match(source, /still paused and waiting for your answer/);
+  assert.match(source, /Nothing was submitted from this link/);
+  assert.match(source, /Find the newest JobAppAgent email/);
+  assert.match(source, /This page cannot open your inbox/);
+  assert.match(source, /Open the inbox where you receive JobAppAgent mail/);
+  assert.match(source, /button button-secondary[^>]*>Go to JobAppAgent home/);
+  assert.match(source, /site-shell/);
+  assert.match(source, /SiteHeader/);
+  assert.match(source, /SiteFooter/);
+  assert.doesNotMatch(source, /Open the latest email from JobAppAgent/);
+  assert.doesNotMatch(source, /This attention link is not valid/);
+});
+
+test("branded 404 page uses plain recovery copy and site CTAs", async () => {
+  const source = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/not-found.tsx", import.meta.url), "utf8"),
+  );
+  assert.match(source, /We can’t find that page/);
+  assert.match(source, /Your agent and applications aren’t affected/);
+  assert.match(source, /Go to JobAppAgent home/);
+  assert.match(source, /Browse published jobs/);
+  assert.match(source, /href="\/jobs"/);
+  assert.match(source, /SiteHeader/);
+  assert.match(source, /SiteFooter/);
+  assert.match(source, /site-shell/);
+});
+
+test("product SiteHeader nav works from non-home pages", async () => {
+  const source = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/components/SiteChrome.tsx", import.meta.url), "utf8"),
+  );
+  assert.match(source, /href=\{community \? "https:\/\/jobappagent\.com" : "\/#top"\}/);
+  assert.match(source, /href="\/#process"/);
+  assert.match(source, /href="\/#boundaries"/);
+  assert.match(source, /<Link href="\/#process">How it works<\/Link>/);
+  assert.match(source, /<Link href="\/#boundaries">Boundaries<\/Link>/);
+});
+
+test("jobs empty state offers Install JobAppAgent when unfiltered", async () => {
+  const source = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/jobs/JobsBoard.tsx", import.meta.url), "utf8"),
+  );
+  assert.match(source, /No open roles right now/);
+  assert.match(source, /New listings appear here as maintainers review the community registry/);
+  assert.match(source, /Install JobAppAgent/);
+  assert.match(source, /jobappagent\.com\/platforms/);
+  assert.match(source, /Clear filters/);
 });
 
 test("attention design harness and judgment have no operational preview actions", async () => {
@@ -162,15 +224,57 @@ test("server-renders the branded community dashboard", async () => {
   assert.doesNotMatch(html, /Install agent|Open source on GitHub/i);
 });
 
-test("publishes crawler guidance and a canonical sitemap", async () => {
-  const [robots, sitemap] = await Promise.all([render("/robots.txt"), render("/sitemap.xml")]);
+test("publishes crawler guidance and a host-local apex sitemap", async () => {
+  const [robots, sitemap, statsSitemap] = await Promise.all([
+    render("/robots.txt"),
+    render("/sitemap.xml"),
+    render("/stats-sitemap.xml"),
+  ]);
   assert.equal(robots.status, 200);
   assert.equal(sitemap.status, 200);
+  assert.equal(statsSitemap.status, 200);
   assert.match(await robots.text(), /Disallow: \/api\//);
   const sitemapXml = await sitemap.text();
   assert.match(sitemapXml, /https:\/\/jobappagent\.com\/privacy/);
-  assert.match(sitemapXml, /https:\/\/stats\.jobappagent\.com/);
   assert.match(sitemapXml, /https:\/\/jobappagent\.com\/jobs</);
+  assert.doesNotMatch(sitemapXml, /stats\.jobappagent\.com/);
+  const statsXml = await statsSitemap.text();
+  assert.match(statsXml, /https:\/\/stats\.jobappagent\.com\//);
+  assert.doesNotMatch(statsXml, /jobappagent\.com\/platforms/);
+});
+
+test("homepage head includes apex canonical and schema.org JSON-LD without offers", async () => {
+  const response = await render("/");
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /rel="canonical" href="https:\/\/jobappagent\.com\/?"/);
+  assert.match(html, /type="application\/ld\+json"/);
+  assert.match(html, /"@type":"Organization"/);
+  assert.match(html, /"@type":"WebSite"/);
+  assert.match(html, /"@type":"SoftwareApplication"/);
+  assert.doesNotMatch(html, /"@type":"SoftwareApplication"[^<]*"offers"/);
+  assert.doesNotMatch(html, /"@type":"Offer"/);
+
+  const ldBlocks = [...html.matchAll(/type="application\/ld\+json"[^>]*>([^<]+)</g)].map((match) => match[1]);
+  assert.ok(ldBlocks.length >= 1);
+  for (const raw of ldBlocks) {
+    const parsed = JSON.parse(raw.replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&"));
+    const nodes = parsed["@graph"] ?? [parsed];
+    for (const node of nodes) {
+      assert.equal(typeof node["@type"], "string");
+      assert.equal("offers" in node, false);
+      assert.equal("price" in node, false);
+    }
+  }
+});
+
+test("platform pages publish BreadcrumbList JSON-LD and apex canonicals", async () => {
+  for (const path of ["/platforms", "/platforms/grok"]) {
+    const html = await (await render(path)).text();
+    assert.match(html, new RegExp(`rel="canonical" href="https://jobappagent.com${path}"`));
+    assert.match(html, /"@type":"BreadcrumbList"/);
+    assert.match(html, /ListItem/);
+  }
 });
 
 test("publishes an indexable jobs board without founding pricing", async () => {

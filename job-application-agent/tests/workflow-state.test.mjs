@@ -67,6 +67,7 @@ function submission(index, roundId, overrides = {}) {
     submittedAt: `2026-08-${String(index + 1).padStart(2, '0')}T10:00:00.000Z`,
     approval: 'STANDING AUTHORIZATION',
     answers: {},
+    telemetry: { durationBucket: '2-5m', fieldsFilled: 8, shortAnswerCount: 1, resumeUploaded: true },
     ...overrides,
   };
 }
@@ -248,6 +249,7 @@ test('ships a filterable global discovery source catalog and tracks source attri
     submittedAt: new Date().toISOString(),
     approval: 'STANDING AUTHORIZATION',
     answers: {},
+    telemetry: { durationBucket: '2-5m', fieldsFilled: 6, resumeUploaded: true },
   });
   const [stored] = (await readFile(join(directory, 'applications.ndjson'), 'utf8')).trim().split('\n').map(JSON.parse);
   assert.equal(stored.discoverySourceId, 'yc-work-at-a-startup');
@@ -266,6 +268,7 @@ test('ships a filterable global discovery source catalog and tracks source attri
     submittedAt: new Date().toISOString(),
     approval: 'STANDING AUTHORIZATION',
     answers: {},
+    telemetry: { durationBucket: '2-5m', fieldsFilled: 6, resumeUploaded: true },
   });
   assert.equal(invalidSource.status, 1);
   assert.match(invalidSource.stderr, /packaged or community source ID/i);
@@ -466,6 +469,49 @@ test('ledger add automatically attempts community sharing and reports durable pe
   assert.equal(pending.communityJobs.count, 1);
   assert.equal(pending.communityJobs.applications[0].applicationId, 'community-ledger-hook');
   assert.equal(JSON.stringify(pending.communityJobs).includes('answers'), false);
+});
+
+test('blocks Rapid HighLevel-style different-role bursts under the 15-day company cooldown', async (t) => {
+  const { env } = await fixture(t, 'highlevel-company-burst');
+  const roles = [
+    { id: 'hl-1', role: 'Lead Engineer - Platform (Special Projects)', url: 'https://jobs.lever.co/highlevel/hl-1' },
+    { id: 'hl-2', role: 'Staff Engineer - Backend', url: 'https://jobs.lever.co/highlevel/hl-2' },
+    { id: 'hl-3', role: 'Senior SDE - Conversations', url: 'https://jobs.lever.co/highlevel/hl-3' },
+  ];
+  const firstAt = new Date().toISOString();
+  cli(env, ['ledger', 'add', '--stdin'], submission(1, undefined, {
+    id: roles[0].id,
+    company: 'HighLevel',
+    role: roles[0].role,
+    url: roles[0].url,
+    employerJobId: 'highlevel:hl-1',
+    source: 'lever',
+    applicationChannel: 'lever',
+    submittedAt: firstAt,
+  }));
+
+  for (const role of roles.slice(1)) {
+    const check = cli(env, ['ledger', 'check', '--stdin'], {
+      id: role.id,
+      company: 'HighLevel',
+      role: role.role,
+      url: role.url,
+      employerJobId: `highlevel:${role.id}`,
+    });
+    assert.equal(check.companyReapply.decision, 'cooldown-active', role.role);
+    const blocked = cliFailure(env, ['ledger', 'add', '--stdin'], submission(2, undefined, {
+      id: role.id,
+      company: 'HighLevel',
+      role: role.role,
+      url: role.url,
+      employerJobId: `highlevel:${role.id}`,
+      source: 'lever',
+      applicationChannel: 'lever',
+      submittedAt: new Date().toISOString(),
+    }));
+    assert.equal(blocked.status, 1, role.role);
+    assert.match(blocked.stderr, /reapplication cooldown is active/i);
+  }
 });
 
 test('blocks a different role at the same company during the 15-day cooldown', async (t) => {
@@ -759,6 +805,53 @@ test('replays and prioritizes an owner-only attention queue', async (t) => {
   cli(env, ['attention', 'resolve', '--stdin'], { id: captcha.id });
   const after = cli(env, ['attention', 'list']);
   assert.deepEqual(after.items.map((item) => item.id), [judgment.id]);
+});
+
+test('attention add ignores partial session-binding fields and aliases common blockers', async (t) => {
+  const { directory, env } = await fixture(t, 'attention-aliases');
+  const { roundId } = cli(env, ['round', 'start', '--stdin'], { requestedCount: 5 });
+
+  // display/vncPort/tabHint without browserProfilePath must not fail the pause
+  const partial = cli(env, ['attention', 'add', '--stdin'], {
+    roundId,
+    applicationId: 'partial-binding',
+    url: 'https://jobs.example.com/partial',
+    stage: 'submission',
+    blocker: 'login',
+    requiredActions: ['complete-login'],
+    title: 'Staff Engineer',
+    display: ':99',
+    vncPort: 5900,
+    tabHint: { urlContains: '/application' },
+  });
+  assert.equal(partial.blocker, 'authentication');
+  assert.deepEqual(partial.requiredActions, ['sign-in']);
+  assert.equal(partial.sessionBinding, undefined);
+
+  const answersRejected = cliFailure(env, ['attention', 'add', '--stdin'], {
+    roundId,
+    applicationId: 'answers-not-allowed',
+    url: 'https://jobs.example.com/answers',
+    stage: 'answers',
+    blocker: 'judgment',
+    requiredActions: ['provide-judgment'],
+    answers: [{ questionId: 'why', text: 'private' }],
+  });
+  assert.equal(answersRejected.status, 1);
+  assert.match(answersRejected.stderr, /Unknown attention property: answers/);
+
+  const badPort = cliFailure(env, ['attention', 'add', '--stdin'], {
+    roundId,
+    applicationId: 'bad-vnc',
+    url: 'https://jobs.example.com/vnc',
+    stage: 'submission',
+    blocker: 'captcha',
+    requiredActions: ['complete-captcha'],
+    browserProfilePath: join(directory, 'chrome-fill'),
+    vncPort: 5901,
+  });
+  assert.equal(badPort.status, 1);
+  assert.match(badPort.stderr, /vncPort must be 5900/i);
 });
 
 test('qualifies only reproducible general-purpose friction for a public PR', async (t) => {
