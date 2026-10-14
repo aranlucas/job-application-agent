@@ -110,9 +110,10 @@ function env() {
         }));
         return { jobs: jobs.slice(0, limit), hasMore: jobs.length > limit };
       },
-      async listLive({ limit, cursor }) {
+      async listLive({ limit, cursor, status = null }) {
         const ordered = [...communityJobs.values()]
           .filter((job) => job.publicationStatus === 'published' && job.reviewStatus === 'maintainer-reviewed')
+          .filter((job) => status == null || (job.livenessStatus ?? 'unknown') === status)
           .sort((left, right) => right.lastSeenAt.localeCompare(left.lastSeenAt) || right.jobId.localeCompare(left.jobId));
         const start = cursor == null ? 0 : ordered.findIndex((job) => job.lastSeenAt < cursor.lastSeenAt || (job.lastSeenAt === cursor.lastSeenAt && job.jobId < cursor.jobId));
         const jobs = ordered.slice(Math.max(0, start), Math.max(0, start) + limit + 1).map((job) => ({
@@ -376,6 +377,47 @@ test('/v1/jobs/live returns liveness fields and uses a distinct rate-limit scope
     'url',
   ]);
   assert.match(bindings.sourceReadRateLimitKeys[0], /^jobs-live:[0-9a-f]{64}$/);
+});
+
+test('/v1/jobs/live?status=open returns only open jobs and rejects bad status', async () => {
+  const bindings = env();
+  const installationId = '11111111-1111-4111-8111-111111111111';
+  await jobContribution(bindings, installationId, {
+    url: 'https://job-boards.greenhouse.io/example/jobs/1',
+    company: 'Example',
+    role: 'Open Role',
+    applicationChannel: 'greenhouse',
+  });
+  await jobContribution(bindings, installationId, {
+    url: 'https://job-boards.greenhouse.io/example/jobs/2',
+    company: 'Example',
+    role: 'Closed Role',
+    applicationChannel: 'greenhouse',
+  });
+  const ids = [...bindings.communityJobs.keys()];
+  Object.assign(bindings.communityJobs.get(ids[0]), {
+    publicationStatus: 'published',
+    reviewStatus: 'maintainer-reviewed',
+    livenessStatus: 'open',
+    lastCheckedAt: '2026-10-14T00:00:00.000Z',
+  });
+  Object.assign(bindings.communityJobs.get(ids[1]), {
+    publicationStatus: 'published',
+    reviewStatus: 'maintainer-reviewed',
+    livenessStatus: 'closed',
+    lastCheckedAt: '2026-10-14T00:00:00.000Z',
+    closedAt: '2026-10-14T00:00:00.000Z',
+  });
+
+  const bad = await worker.fetch(new Request('https://relay.example.com/v1/jobs/live?status=nope'), bindings);
+  assert.equal(bad.status, 400);
+
+  const response = await worker.fetch(new Request('https://relay.example.com/v1/jobs/live?status=open&limit=10'), bindings);
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.jobs.length, 1);
+  assert.equal(body.jobs[0].livenessStatus, 'open');
+  assert.equal(body.jobs[0].role, 'Open Role');
 });
 
 test('admin liveness sweep requires Bearer SIGNING_SECRET and processes a batch', async () => {

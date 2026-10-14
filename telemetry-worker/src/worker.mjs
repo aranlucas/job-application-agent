@@ -382,7 +382,7 @@ function jobStore(env) {
       const jobs = (result.results ?? []).map((row) => mapLegacyJob(row));
       return { jobs: jobs.slice(0, limit), hasMore: jobs.length > limit };
     },
-    async listLive({ limit, cursor }) {
+    async listLive({ limit, cursor, status = null }) {
       const result = await database.prepare(`
         SELECT jobs.job_id, jobs.canonical_url, jobs.company, jobs.role, jobs.application_channel,
                jobs.discovery_source, jobs.provider_url, jobs.first_seen_at, jobs.last_seen_at,
@@ -392,10 +392,19 @@ function jobStore(env) {
         FROM community_jobs AS jobs
         WHERE jobs.publication_status = 'published'
           AND jobs.review_status = 'maintainer-reviewed'
+          AND (? IS NULL OR COALESCE(jobs.liveness_status, 'unknown') = ?)
           AND (? IS NULL OR jobs.last_seen_at < ? OR (jobs.last_seen_at = ? AND jobs.job_id < ?))
         ORDER BY jobs.last_seen_at DESC, jobs.job_id DESC
         LIMIT ?
-      `).bind(cursor?.lastSeenAt ?? null, cursor?.lastSeenAt ?? null, cursor?.lastSeenAt ?? null, cursor?.jobId ?? null, limit + 1).all();
+      `).bind(
+        status,
+        status,
+        cursor?.lastSeenAt ?? null,
+        cursor?.lastSeenAt ?? null,
+        cursor?.lastSeenAt ?? null,
+        cursor?.jobId ?? null,
+        limit + 1,
+      ).all();
       const jobs = (result.results ?? []).map((row) => mapLiveJob(row));
       return { jobs: jobs.slice(0, limit), hasMore: jobs.length > limit };
     },
@@ -498,6 +507,8 @@ async function contributeJob(request, env) {
   return response({ accepted: true, jobId, ...state }, 202);
 }
 
+const LIVE_STATUSES = new Set(['open', 'closed', 'unknown']);
+
 async function parseJobListQuery(request) {
   const url = new URL(request.url);
   for (const key of url.searchParams.keys()) if (!['limit', 'cursor'].includes(key)) throw Object.assign(new Error('invalid_job_query'), { status: 400 });
@@ -507,6 +518,25 @@ async function parseJobListQuery(request) {
   let cursor;
   try { cursor = jobCursor(url.searchParams.get('cursor')); } catch { throw Object.assign(new Error('invalid_job_query'), { status: 400 }); }
   return { limit, cursor };
+}
+
+async function parseLiveJobListQuery(request) {
+  const url = new URL(request.url);
+  for (const key of url.searchParams.keys()) {
+    if (!['limit', 'cursor', 'status'].includes(key)) throw Object.assign(new Error('invalid_job_query'), { status: 400 });
+  }
+  const rawLimit = url.searchParams.get('limit');
+  const limit = rawLimit == null ? 50 : Number(rawLimit);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw Object.assign(new Error('invalid_job_query'), { status: 400 });
+  let cursor;
+  try { cursor = jobCursor(url.searchParams.get('cursor')); } catch { throw Object.assign(new Error('invalid_job_query'), { status: 400 }); }
+  const rawStatus = url.searchParams.get('status');
+  let status = null;
+  if (rawStatus != null) {
+    if (!LIVE_STATUSES.has(rawStatus)) throw Object.assign(new Error('invalid_job_query'), { status: 400 });
+    status = rawStatus;
+  }
+  return { limit, cursor, status };
 }
 
 async function listJobs(request, env) {
@@ -520,7 +550,7 @@ async function listJobs(request, env) {
 async function listLiveJobs(request, env) {
   if (!await allowed(env.SOURCE_READ_RATE_LIMITER, await publicReadKey(request, env.SIGNING_SECRET, 'jobs-live'))) return response({ error: 'rate_limited' }, 429);
   let query;
-  try { query = await parseJobListQuery(request); } catch { return response({ error: 'invalid_job_query' }, 400); }
+  try { query = await parseLiveJobListQuery(request); } catch { return response({ error: 'invalid_job_query' }, 400); }
   const store = jobStore(env);
   const result = await store.listLive(query);
   const newestLastCheckedAt = store.newestLastCheckedAt

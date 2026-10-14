@@ -77,9 +77,11 @@ export function JobsBoard({
   jobs: BoardJob[];
   checkedAtLabel: string;
 }) {
+  // Default "Any time": registry firstSeenAt is often weeks old even for freshly
+  // verified-open roles, so "Last 14 days" hid the whole board after liveness landed.
   const [role, setRole] = useState("");
   const [location, setLocation] = useState("");
-  const [postedDays, setPostedDays] = useState("14");
+  const [postedDays, setPostedDays] = useState("0");
 
   const roleOptions = useMemo(() => {
     const set = new Set(jobs.map((job) => classifyRoleFamily(job.role)));
@@ -97,19 +99,20 @@ export function JobsBoard({
   );
 
   const widenHint = useMemo(() => {
-    if (filtered.length > 0 || !role || postedDays === "30") return null;
-    const widened = filterBoardJobs(jobs, { role, location, postedDays: 30 });
-    if (widened.length === 0) return null;
-    return `${widened.length} ${role} role${widened.length === 1 ? "" : "s"} are open if you widen Posted to 30 days`;
+    if (filtered.length > 0 || postedDays === "0") return null;
+    const anyTime = filterBoardJobs(jobs, { role, location, postedDays: 0 });
+    if (anyTime.length === 0) return null;
+    const label = role ? `${role} role${anyTime.length === 1 ? "" : "s"}` : `open role${anyTime.length === 1 ? "" : "s"}`;
+    return `${anyTime.length} ${label} are available if you set Posted to Any time`;
   }, [filtered.length, jobs, role, location, postedDays]);
 
   const clear = () => {
     setRole("");
     setLocation("");
-    setPostedDays("14");
+    setPostedDays("0");
   };
 
-  const filtersActive = Boolean(role || location || postedDays !== "14");
+  const filtersActive = Boolean(role || location || postedDays !== "0");
   const registryEmpty = jobs.length === 0;
 
   return (
@@ -145,10 +148,10 @@ export function JobsBoard({
           <label className={styles.filterPill}>
             <small>Posted</small>
             <select aria-label="Posted" value={postedDays} onChange={(event) => setPostedDays(event.target.value)}>
+              <option value="0">Any time</option>
               <option value="7">Last 7 days</option>
               <option value="14">Last 14 days</option>
               <option value="30">Last 30 days</option>
-              <option value="0">Any time</option>
             </select>
           </label>
           <span className={styles.count} role="status">
@@ -173,8 +176,8 @@ export function JobsBoard({
                 <a className="button" href="https://jobappagent.com/platforms">Install JobAppAgent</a>
               ) : null}
               {widenHint ? (
-                <button type="button" className="button" onClick={() => setPostedDays("30")}>
-                  Widen to 30 days
+                <button type="button" className="button" onClick={() => setPostedDays("0")}>
+                  Show any time
                 </button>
               ) : null}
               {filtersActive ? (

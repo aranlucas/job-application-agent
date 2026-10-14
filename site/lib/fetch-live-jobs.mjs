@@ -31,18 +31,23 @@ function liveUpstreamBase() {
 }
 
 /**
- * @param {{ fetcher?: typeof fetch, signal?: AbortSignal }} [options]
+ * Load live jobs for the public board.
+ * Defaults to `status=open` so SSR only pages verified-open roles (fast).
+ *
+ * @param {{ fetcher?: typeof fetch, signal?: AbortSignal, status?: 'open' | 'closed' | 'unknown' | null }} [options]
  */
 export async function loadLiveJobs(options = {}) {
   const base = liveUpstreamBase();
   if (!base) return [];
   const fetcher = options.fetcher ?? telemetryFetch();
+  const status = options.status === undefined ? 'open' : options.status;
   const jobs = new Map();
   const cursors = new Set();
   let cursor = null;
   for (let page = 0; page < 200; page++) {
     const target = new URL(base);
     target.searchParams.set('limit', '100');
+    if (status) target.searchParams.set('status', status);
     if (cursor) target.searchParams.set('cursor', cursor);
     const response = await fetcher(new Request(target.toString(), {
       headers: { accept: 'application/json' },
