@@ -6,13 +6,17 @@ import {
   validateSourceContributionEnvelope,
 } from '../../job-application-agent/scripts/source-community-schema.mjs';
 import { publicStatsResponse, recordPublicAggregate } from './public-stats.mjs';
-import { runJobLivenessSweep } from './job-liveness.mjs';
+import {
+  DEFAULT_LIVENESS_BATCH_SIZE,
+  runJobLivenessSweep,
+} from './job-liveness.mjs';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SOURCE_MAX_BYTES = 4096;
+const ADMIN_MAX_BYTES = 2048;
 
 function base64url(bytes) {
   return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -64,6 +68,30 @@ export async function verifyToken(token, secret, now = new Date(), { allowExpire
 
 function response(body, status = 200, cacheControl = 'no-store') {
   return Response.json(body, { status, headers: { 'cache-control': cacheControl, 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer' } });
+}
+
+/** Constant-time string compare for Bearer admin auth (Workers have no node:crypto). */
+function timingSafeEqualString(left, right) {
+  if (typeof left !== 'string' || typeof right !== 'string') return false;
+  const a = encoder.encode(left);
+  const b = encoder.encode(right);
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
+  return diff === 0;
+}
+
+/**
+ * Admin auth reuses the worker SIGNING_SECRET as a Bearer token (same secret used
+ * for install HMAC). Distinct from install tokens — callers pass the raw secret.
+ */
+function checkAdminAuth(request, env) {
+  const header = request.headers.get('Authorization') ?? '';
+  const match = /^Bearer\s+(.+)$/i.exec(header);
+  if (!match) return false;
+  const expected = env.SIGNING_SECRET ?? '';
+  if (!match[1] || typeof expected !== 'string' || expected.length < 24) return false;
+  return timingSafeEqualString(match[1], expected);
 }
 
 async function readJson(request, maxBytes) {
@@ -371,6 +399,32 @@ function jobStore(env) {
       const jobs = (result.results ?? []).map((row) => mapLiveJob(row));
       return { jobs: jobs.slice(0, limit), hasMore: jobs.length > limit };
     },
+    /** Oldest-checked (nulls first) published jobs for a bounded liveness batch. */
+    async listDueForLivenessCheck({ limit }) {
+      const result = await database.prepare(`
+        SELECT jobs.job_id, jobs.canonical_url, jobs.company, jobs.role, jobs.application_channel,
+               jobs.discovery_source, jobs.provider_url, jobs.first_seen_at, jobs.last_seen_at,
+               COALESCE(jobs.liveness_status, 'unknown') AS liveness_status,
+               jobs.last_checked_at, jobs.closed_at,
+               (SELECT COUNT(*) FROM community_job_contributions WHERE job_id = jobs.job_id) AS contribution_count
+        FROM community_jobs AS jobs
+        WHERE jobs.publication_status = 'published'
+          AND jobs.review_status = 'maintainer-reviewed'
+        ORDER BY jobs.last_checked_at IS NOT NULL, jobs.last_checked_at ASC, jobs.job_id ASC
+        LIMIT ?
+      `).bind(limit + 1).all();
+      const jobs = (result.results ?? []).map((row) => mapLiveJob(row));
+      return { jobs: jobs.slice(0, limit), hasMore: jobs.length > limit };
+    },
+    async newestLastCheckedAt() {
+      const row = await database.prepare(`
+        SELECT MAX(last_checked_at) AS newest
+        FROM community_jobs
+        WHERE publication_status = 'published'
+          AND review_status = 'maintainer-reviewed'
+      `).first();
+      return row?.newest ?? null;
+    },
     async updateLiveness(jobId, { status, checkedAt, closedAt }) {
       await database.prepare(`
         UPDATE community_jobs
@@ -379,6 +433,17 @@ function jobStore(env) {
             closed_at = ?
         WHERE job_id = ?
       `).bind(status, checkedAt, closedAt, jobId).run();
+    },
+    async updateLivenessBatch(patches) {
+      if (!Array.isArray(patches) || patches.length === 0) return;
+      const statements = patches.map((patch) => database.prepare(`
+        UPDATE community_jobs
+        SET liveness_status = ?,
+            last_checked_at = ?,
+            closed_at = ?
+        WHERE job_id = ?
+      `).bind(patch.status, patch.checkedAt, patch.closedAt, patch.jobId));
+      await database.batch(statements);
     },
   };
 }
@@ -456,8 +521,42 @@ async function listLiveJobs(request, env) {
   if (!await allowed(env.SOURCE_READ_RATE_LIMITER, await publicReadKey(request, env.SIGNING_SECRET, 'jobs-live'))) return response({ error: 'rate_limited' }, 429);
   let query;
   try { query = await parseJobListQuery(request); } catch { return response({ error: 'invalid_job_query' }, 400); }
-  const result = await jobStore(env).listLive(query);
-  return response({ version: 1, jobs: result.jobs, nextCursor: result.hasMore ? encodeJobCursor(result.jobs.at(-1)) : null }, 200, 'no-store');
+  const store = jobStore(env);
+  const result = await store.listLive(query);
+  const newestLastCheckedAt = store.newestLastCheckedAt
+    ? await store.newestLastCheckedAt()
+    : result.jobs.reduce((newest, job) => {
+      if (!job.lastCheckedAt) return newest;
+      return !newest || job.lastCheckedAt > newest ? job.lastCheckedAt : newest;
+    }, null);
+  return response({
+    version: 1,
+    jobs: result.jobs,
+    nextCursor: result.hasMore ? encodeJobCursor(result.jobs.at(-1)) : null,
+    meta: { newestLastCheckedAt },
+  }, 200, 'no-store');
+}
+
+async function adminLivenessSweep(request, env) {
+  if (!checkAdminAuth(request, env)) return response({ error: 'unauthorized' }, 401);
+  let limit = DEFAULT_LIVENESS_BATCH_SIZE;
+  if (request.method === 'POST') {
+    let body = {};
+    try { body = await readJson(request, ADMIN_MAX_BYTES); } catch (error) {
+      return response({ error: error?.status === 413 ? 'payload_too_large' : 'invalid_json' }, error?.status ?? 400);
+    }
+    if (body && typeof body === 'object' && !Array.isArray(body) && body.limit != null) {
+      const parsed = Number(body.limit);
+      if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 100) return response({ error: 'invalid_limit' }, 400);
+      limit = parsed;
+    }
+  }
+  const summary = await runJobLivenessSweep(env, {
+    store: env.JOB_STORE ?? jobStore(env),
+    fetchImpl: env.LIVENESS_FETCH ?? fetch,
+    limit,
+  });
+  return response({ ok: true, ...summary }, 200);
 }
 
 export async function handleRequest(request, env) {
@@ -474,6 +573,9 @@ export async function handleRequest(request, env) {
   if (request.method === 'POST' && pathname === '/v1/jobs') return contributeJob(request, env);
   if (request.method === 'GET' && pathname === '/v1/jobs/live') return listLiveJobs(request, env);
   if (request.method === 'GET' && pathname === '/v1/jobs') return listJobs(request, env);
+  if ((request.method === 'POST' || request.method === 'GET') && pathname === '/v1/admin/jobs/liveness-sweep') {
+    return adminLivenessSweep(request, env);
+  }
   return response({ error: 'not_found' }, 404);
 }
 
@@ -486,6 +588,7 @@ export default {
     await runJobLivenessSweep(env, {
       store: env.JOB_STORE ?? jobStore(env),
       fetchImpl: env.LIVENESS_FETCH ?? fetch,
+      limit: DEFAULT_LIVENESS_BATCH_SIZE,
     });
   },
 };

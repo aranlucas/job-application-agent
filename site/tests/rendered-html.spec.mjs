@@ -288,6 +288,9 @@ test("publishes an indexable jobs board with shared site chrome", async () => {
     const html = await response.text();
     assert.match(html, /Open roles, reviewed/);
     assert.match(html, /canonical" href="https:\/\/jobappagent\.com\/jobs"/);
+    assert.match(html, /og:title" content="Open roles/);
+    assert.match(html, /og:url" content="https:\/\/jobappagent\.com\/jobs"/);
+    assert.match(html, /twitter:title" content="Open roles/);
     assert.doesNotMatch(html, /name="robots" content="noindex/);
     // Shared SiteHeader nav without founding CTA on /jobs* (+ phone Menu toggle).
     assert.match(html, /stats\.jobappagent\.com/);
@@ -319,12 +322,12 @@ test("publishes an indexable jobs board with shared site chrome", async () => {
     assert.match(openHtml, /Reviewed and live, checked daily/);
     assert.match(openHtml, /Last checked /);
     assert.doesNotMatch(openHtml, /Last checked [^<"']{0,40}Reviewed and live/);
-    assert.match(openHtml, /npx job-application-agent@latest install/);
-    assert.match(openHtml, /Paste this into your agent/);
-    assert.match(openHtml, /Apply to this role in review mode:/);
-    assert.doesNotMatch(openHtml, />\s*apply https:\/\//);
-    assert.doesNotMatch(openHtml, /npx job-application-agent@latest apply/);
+    assert.match(openHtml, /npx job-application-agent@latest apply /);
+    assert.match(openHtml, /Apply in review mode/);
+    assert.match(openHtml, /og:url" content="https:\/\/jobappagent\.com\/jobs\//);
     assert.match(openHtml, /application\/ld\+json/);
+    assert.match(openHtml, /validThrough/);
+    assert.match(openHtml, /TELECOMMUTE|applicantLocationRequirements/);
     assert.doesNotMatch(openHtml, /\$49|Reserve for \$49|Reserve founding|Founding reservation|FOUNDING RESERVATION/i);
   } finally {
     if (previous === undefined) delete process.env.USE_JOBS_BOARD_FIXTURES;

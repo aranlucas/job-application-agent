@@ -36,8 +36,10 @@ export function LandingAnalyticsProvider({ children }: { children: ReactNode }) 
     let active = true;
     void (async () => {
       try {
-        if (typeof window !== "undefined" && (window as Window & { __JAA_JOBS_NO_ANALYTICS__?: number }).__JAA_JOBS_NO_ANALYTICS__) {
-          return;
+        // Skip analytics config fetch on /jobs* (flag + pathname; no checkout funnel there).
+        if (typeof window !== "undefined") {
+          const jobsFlag = (window as Window & { __JAA_JOBS_NO_ANALYTICS__?: number }).__JAA_JOBS_NO_ANALYTICS__;
+          if (jobsFlag || window.location.pathname.startsWith("/jobs")) return;
         }
         const response = await fetch("/api/analytics-config", { credentials: "omit" });
         if (!active || response.status === 204 || !response.ok) return;
@@ -57,9 +59,10 @@ export function LandingAnalyticsProvider({ children }: { children: ReactNode }) 
 
   useEffect(() => {
     if (!remote) return;
-    // Jobs board surfaces set this flag — no per-candidate / page analytics there.
-    if (typeof window !== "undefined" && (window as Window & { __JAA_JOBS_NO_ANALYTICS__?: number }).__JAA_JOBS_NO_ANALYTICS__) {
-      return;
+    // Jobs board surfaces — no per-candidate / page analytics there.
+    if (typeof window !== "undefined") {
+      const jobsFlag = (window as Window & { __JAA_JOBS_NO_ANALYTICS__?: number }).__JAA_JOBS_NO_ANALYTICS__;
+      if (jobsFlag || window.location.pathname.startsWith("/jobs")) return;
     }
     void captureLandingPageview({ apiKey: remote.apiKey, host: remote.host });
   }, [remote]);

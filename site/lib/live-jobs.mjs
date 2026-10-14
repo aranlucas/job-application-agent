@@ -1,11 +1,27 @@
-import { attachLocations } from './job-locations.mjs';
+import { attachLocations, countryLabel } from './job-locations.mjs';
 
 const JOB_ID = /^community-job-[0-9a-f]{16}$/;
 const CHANNELS = new Set(['linkedin', 'greenhouse', 'lever', 'ashby', 'workable', 'comeet', 'workday', 'rippling', 'smartrecruiters', 'google-form', 'company', 'email', 'other']);
 const DISCOVERY_SOURCES = new Set(['direct-company', 'linkedin', 'x', 'yc', 'hacker-news', 'job-board', 'email', 'user-supplied', 'web-search', 'other']);
 const LIVENESS = new Set(['open', 'closed', 'unknown']);
 const STALE_MS = 3 * 86400000;
+const VALID_THROUGH_MS = 30 * 86400000;
 const TRUST_LINE = 'Reviewed and live, checked daily';
+const CHANNEL_LABELS = {
+  linkedin: 'LinkedIn',
+  greenhouse: 'Greenhouse',
+  lever: 'Lever',
+  ashby: 'Ashby',
+  workable: 'Workable',
+  comeet: 'Comeet',
+  workday: 'Workday',
+  rippling: 'Rippling',
+  smartrecruiters: 'SmartRecruiters',
+  'google-form': 'Google Form',
+  company: 'company careers page',
+  email: 'email',
+  other: 'public posting',
+};
 
 function isRecord(value) {
   return Boolean(value) && !Array.isArray(value) && typeof value === 'object';
@@ -61,11 +77,18 @@ export function jobIdFromSlug(slug) {
 }
 
 export function validateLiveJobs(input) {
-  const rootKeys = new Set(['version', 'jobs', 'nextCursor']);
+  const rootKeys = new Set(['version', 'jobs', 'nextCursor', 'meta']);
   if (!isRecord(input) || !exactKeys(input, rootKeys) || input.version !== 1 || !Array.isArray(input.jobs) || input.jobs.length > 100) {
     return { ok: false, error: 'invalid_jobs' };
   }
   if (input.nextCursor !== null && !boundedString(input.nextCursor, 1024)) return { ok: false, error: 'invalid_jobs' };
+  let meta = null;
+  if (input.meta !== undefined) {
+    if (!isRecord(input.meta) || !exactKeys(input.meta, new Set(['newestLastCheckedAt'])) || !nullableIso(input.meta.newestLastCheckedAt)) {
+      return { ok: false, error: 'invalid_jobs' };
+    }
+    meta = { newestLastCheckedAt: input.meta.newestLastCheckedAt };
+  }
 
   const jobKeys = new Set([
     'jobId', 'url', 'company', 'role', 'applicationChannel', 'discoverySource', 'providerUrl',
@@ -95,7 +118,28 @@ export function validateLiveJobs(input) {
       slug: jobSlug(job),
     });
   }
-  return { ok: true, data: { version: 1, jobs, nextCursor: input.nextCursor } };
+  return {
+    ok: true,
+    data: {
+      version: 1,
+      jobs,
+      nextCursor: input.nextCursor,
+      ...(meta ? { meta } : {}),
+    },
+  };
+}
+
+export function jobPostingDescription(job) {
+  const place = locationLabel(job);
+  const channel = CHANNEL_LABELS[job.applicationChannel] ?? job.applicationChannel;
+  const parts = [
+    `${job.role} at ${job.company}.`,
+    place ? `Location: ${place}.` : null,
+    `Application channel: ${channel}.`,
+    TRUST_LINE + '.',
+    'Apply through JobAppAgent on the employer\'s own posting; nothing is auto-submitted.',
+  ].filter(Boolean);
+  return parts.join(' ');
 }
 
 export function communityJobsLiveUpstreamUrl(upstream, requestUrl) {
@@ -203,11 +247,12 @@ export function attachBoardLocations(jobs, locationIndex, now = Date.now()) {
 export function jobPostingJsonLd(job, { siteUrl = 'https://jobappagent.com' } = {}) {
   const url = `${siteUrl}/jobs/${job.slug}`;
   const closed = job.livenessStatus === 'closed';
+  const remote = job.location?.workplace === 'remote';
   const posting = {
     '@context': 'https://schema.org',
     '@type': 'JobPosting',
     title: job.role,
-    description: `${job.role} at ${job.company}. ${TRUST_LINE}.`,
+    description: jobPostingDescription(job),
     datePosted: job.firstSeenAt.slice(0, 10),
     hiringOrganization: {
       '@type': 'Organization',
@@ -225,17 +270,35 @@ export function jobPostingJsonLd(job, { siteUrl = 'https://jobappagent.com' } = 
   if (job.lastCheckedAt) posting.dateModified = job.lastCheckedAt.slice(0, 10);
   if (closed && job.closedAt) {
     posting.validThrough = job.closedAt.slice(0, 10);
+  } else if (!closed) {
+    const base = Date.parse(job.lastCheckedAt ?? job.firstSeenAt);
+    if (Number.isFinite(base)) {
+      posting.validThrough = new Date(base + VALID_THROUGH_MS).toISOString().slice(0, 10);
+    }
   }
+
   const place = locationLabel(job);
-  if (place) {
-    posting.jobLocationType = job.location?.workplace === 'remote' ? 'TELECOMMUTE' : undefined;
-    posting.jobLocation = {
-      '@type': 'Place',
-      address: {
-        '@type': 'PostalAddress',
-        addressLocality: place,
-      },
-    };
+  const countries = Array.isArray(job.location?.countries) ? job.location.countries.filter(Boolean) : [];
+  if (remote) {
+    posting.jobLocationType = 'TELECOMMUTE';
+    const requirements = countries.length > 0
+      ? countries.map((code) => ({
+        '@type': 'Country',
+        name: countryLabel(code),
+        ...(/^[A-Za-z]{2}$/.test(code) ? { identifier: code.toUpperCase() } : {}),
+      }))
+      : [{ '@type': 'Country', name: place && place !== 'Remote' ? place.replace(/^Remote(?:\s*[·|,]\s*)?/i, '').trim() || 'Worldwide' : 'Worldwide' }];
+    posting.applicantLocationRequirements = requirements.length === 1 ? requirements[0] : requirements;
+  }
+  if (place || countries.length > 0) {
+    const address = { '@type': 'PostalAddress' };
+    if (place) address.addressLocality = place;
+    if (countries.length === 1 && /^[A-Za-z]{2}$/.test(countries[0])) {
+      address.addressCountry = countries[0].toUpperCase();
+    } else if (countries.length === 1) {
+      address.addressCountry = countryLabel(countries[0]);
+    }
+    posting.jobLocation = { '@type': 'Place', address };
   }
   if (job.location?.employmentType) {
     const map = {
