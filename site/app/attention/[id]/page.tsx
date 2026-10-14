@@ -23,13 +23,35 @@ export default async function AttentionPage({ params, searchParams }: {
   if (fixture) return <BuyerFlow key={fixture.key} view={fixture.view} initialStep={fixture.step} designFixture />;
 
   const token = typeof query.token === "string" ? query.token.trim() : "";
-  if (!token) return <AttentionError title="This link needs a secure token." />;
+  if (!token) {
+    return <AttentionError
+      title="This link needs a secure token."
+      body="Open the newest secure link from your JobAppAgent email."
+      home
+    />;
+  }
   const config = attentionEnv();
   const verified = await verifyAttentionMagicLink(token, config.magicLinkSecret, { attentionId });
-  if (!verified.ok || !verified.payload) return <AttentionError title={verified.error === "token_expired" ? "This link has expired." : "This attention link is not valid."} />;
+  if (!verified.ok) {
+    const confirmedPaused = await canConfirmApplicationPaused(verified);
+    return <AttentionError
+      title="This link has expired"
+      body={confirmedPaused
+        ? "Your application is still paused and waiting for your answer. Nothing was submitted."
+        : "Nothing was submitted from this link."}
+      latestEmail
+    />;
+  }
 
   // No generic question fallback: only the employer's packaged questions need the buyer.
   const payload = verified.payload;
+  if (!payload) {
+    return <AttentionError
+      title="This link has expired"
+      body="Nothing was submitted from this link."
+      latestEmail
+    />;
+  }
   const view: AttentionView = {
     attentionId,
     company: payload.company ?? "Company",
@@ -42,12 +64,49 @@ export default async function AttentionPage({ params, searchParams }: {
   return <BuyerFlow view={view} initialStep={signal ? "queue" : buyerAttentionStep(view)} initialSignal={signal?.signal} />;
 }
 
-function AttentionError({ title }: { title: string }) {
+async function canConfirmApplicationPaused(verified: {
+  ok: boolean;
+  error?: string;
+  payload?: { attentionId?: string };
+}): Promise<boolean> {
+  if (verified.error !== "token_expired" || !verified.payload?.attentionId) return false;
+  try {
+    const signal = await getAttentionSignal(verified.payload.attentionId);
+    // A signed-but-expired link proves the pause existed; no buyer signal means it is still waiting.
+    return !signal;
+  } catch {
+    return false;
+  }
+}
+
+function AttentionError({
+  title,
+  body,
+  home = false,
+  latestEmail = false,
+}: {
+  title: string;
+  body: string;
+  home?: boolean;
+  latestEmail?: boolean;
+}) {
   return <main className="attention-page page-width">
     <section className="attention-panel attention-error-panel">
       <h1>{title}</h1>
-      <p>Open the newest secure link from your JobAppAgent email.</p>
-      <div className="attention-error-actions"><Link className="button" href="/">Back home</Link></div>
+      <p>{body}</p>
+      <div className="attention-error-actions">
+        {latestEmail && <a className="button" href="#latest-email">Open the latest email from JobAppAgent</a>}
+        {home && <Link className="button" href="/">Back home</Link>}
+      </div>
+      {latestEmail && <div className="attention-error-help" id="latest-email">
+        <h2>Find the newest JobAppAgent email</h2>
+        <p>This page cannot open your inbox. Use the newest message from JobAppAgent — older links stop working on purpose.</p>
+        <ol>
+          <li>Open the inbox where you receive JobAppAgent mail.</li>
+          <li>Search for JobAppAgent and sort by newest.</li>
+          <li>Open that message and use its Continue applying link.</li>
+        </ol>
+      </div>}
     </section>
   </main>;
 }

@@ -623,17 +623,19 @@ export function PublishedJobs({ locationIndex }: { locationIndex: LocationIndex 
                 <path d="m21 21-4.35-4.35" />
               </svg>
             </div>
-            <h2>{filtered ? "No matching jobs" : "No published jobs yet"}</h2>
+            <h2>{filtered ? "No matching jobs" : "No published jobs right now"}</h2>
             <p>
               {filtered
                 ? "Try fewer words or clear a filter. Listings without verified location data won’t match location or country filters."
-                : "Check back later for new opportunities."}
+                : "New listings appear here as the community publishes them. You can still let the agent find roles for you."}
             </p>
-            {filtered && (
-              <div className={styles.emptyActions}>
+            <div className={styles.emptyActions}>
+              {filtered ? (
                 <button type="button" className="button button-secondary" onClick={clear}>Clear filters</button>
-              </div>
-            )}
+              ) : (
+                <a className="button" href="https://jobappagent.com/platforms">Install JobAppAgent</a>
+              )}
+            </div>
           </div>
         )}
 
