@@ -39,6 +39,44 @@ button, input { font: inherit; }
 .nav-links > a { min-height: 2.75rem; display: inline-flex; align-items: center; color: var(--text); text-decoration: none; }
 .nav-links > a:hover { color: var(--green); }
 
+/* /jobs* phone Menu toggle (SiteHeader foundingCta={false}); hidden until ≤48rem. */
+.site-mobile-menu { display: none; position: relative; }
+.site-mobile-menu > summary {
+  list-style: none;
+  cursor: pointer;
+  font: 500 .72rem/1 var(--font-mono), monospace;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  min-height: 2.75rem;
+  display: inline-flex;
+  align-items: center;
+}
+.site-mobile-menu > summary::-webkit-details-marker { display: none; }
+.site-mobile-menu-links {
+  position: absolute;
+  right: 0;
+  top: calc(100% + .35rem);
+  min-width: 11rem;
+  display: grid;
+  gap: .15rem;
+  padding: .65rem;
+  border: 1px solid var(--line);
+  border-radius: .75rem;
+  background: var(--surface);
+  z-index: 30;
+}
+.site-mobile-menu-links a {
+  min-height: 2.4rem;
+  display: flex;
+  align-items: center;
+  padding: 0 .55rem;
+  color: var(--text);
+  text-decoration: none;
+  border-radius: .45rem;
+}
+.site-mobile-menu-links a:hover { background: var(--accent-soft); color: var(--ink); }
+
 .button { min-height: 3rem; padding: .85rem 1.2rem; border: 0; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; gap: .5rem; background: var(--accent); color: var(--ink); font-size: .875rem; font-weight: 700; text-decoration: none; cursor: pointer; transition: background 180ms ease, transform 180ms ease; }
 .button:hover:not(:disabled) { background: var(--accent-hover); transform: translateY(-.1rem); }
 .button:disabled { cursor: wait; opacity: .72; }
@@ -227,6 +265,8 @@ footer a { min-width: 2.75rem; min-height: 2.75rem; margin-left: 1.25rem; paddin
 
 @media (max-width: 64rem) {
   .nav-links > a { display: none; }
+  /* /jobs* keeps Community / How it works / Boundaries visible at 1024 (no founding CTA). */
+  .site-nav-jobs .nav-links > a { display: inline-flex; }
   .hero { grid-template-columns: 1fr; gap: 3.5rem; padding-top: 4.5rem; }
   .community-proof { max-width: 48rem; }
   .boundary-layout { grid-template-columns: 1fr; gap: 3rem; }
@@ -241,6 +281,8 @@ footer a { min-width: 2.75rem; min-height: 2.75rem; margin-left: 1.25rem; paddin
 @media (max-width: 48rem) {
   .page-width { width: min(100% - 2rem, 73.75rem); }
   .brand-tagline { display: none; }
+  .site-nav-jobs .nav-links > a { display: none; }
+  .site-nav-jobs .site-mobile-menu { display: block; }
   .hero { padding-block: 3.75rem 5rem; }
   .hero h1 { font-size: clamp(3.1rem, 13vw, 4.2rem); }
   .hero-actions { display: grid; }

@@ -92,8 +92,9 @@
 
 .jobRow {
   display: grid;
-  grid-template-columns: minmax(7rem, 11rem) minmax(0, 1.4fr) minmax(7rem, 11rem) minmax(6rem, 8.5rem) auto;
-  gap: 0.85rem;
+  /* Narrower company/location/date so titles stay one line at 1024. */
+  grid-template-columns: minmax(5.5rem, 8rem) minmax(0, 1.8fr) minmax(5.5rem, 9rem) minmax(5rem, 7rem) auto;
+  gap: 0.75rem;
   align-items: center;
   padding: 0.95rem 1.35rem;
   border-top: 1px solid var(--line);
@@ -118,6 +119,7 @@
   font-weight: 500;
   font-size: 0.98rem;
   color: var(--ink);
+  white-space: nowrap;
 }
 
 .location,
@@ -132,6 +134,7 @@
   color: var(--muted);
 }
 
+/* Solid primary — detail similar-role rows only (list rows use .button-secondary). */
 .applyBtn {
   justify-self: end;
   min-height: 2.4rem;
@@ -144,6 +147,15 @@
   text-decoration: none;
   display: inline-flex;
   align-items: center;
+}
+
+/* Outline secondary on list rows; tighter inline padding so titles keep room at 1024. */
+.rowApply {
+  justify-self: end;
+  white-space: nowrap;
+  padding-inline: 14px;
+  font-size: 0.8rem;
+  min-height: 2.5rem;
 }
 
 .mobileCard {
@@ -506,66 +518,3 @@
   }
 }
 
-:global(.jobs-nav-links) {
-  display: flex;
-}
-
-:global(.jobs-mobile-menu) {
-  display: none;
-  position: relative;
-}
-
-:global(.jobs-mobile-menu > summary) {
-  list-style: none;
-  cursor: pointer;
-  font: 500 0.72rem/1 var(--font-mono), monospace;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--muted);
-  min-height: 2.75rem;
-  display: inline-flex;
-  align-items: center;
-}
-
-:global(.jobs-mobile-menu > summary::-webkit-details-marker) {
-  display: none;
-}
-
-:global(.jobs-mobile-menu-links) {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 0.35rem);
-  min-width: 11rem;
-  display: grid;
-  gap: 0.15rem;
-  padding: 0.65rem;
-  border: 1px solid var(--line);
-  border-radius: 0.75rem;
-  background: var(--surface);
-  z-index: 30;
-}
-
-:global(.jobs-mobile-menu-links a) {
-  min-height: 2.4rem;
-  display: flex;
-  align-items: center;
-  padding: 0 0.55rem;
-  color: var(--text);
-  text-decoration: none;
-  border-radius: 0.45rem;
-}
-
-:global(.jobs-mobile-menu-links a:hover) {
-  background: var(--accent-soft);
-  color: var(--ink);
-}
-
-@media (max-width: 860px) {
-  :global(.jobs-nav-links) {
-    display: none;
-  }
-
-  :global(.jobs-mobile-menu) {
-    display: block;
-  }
-}

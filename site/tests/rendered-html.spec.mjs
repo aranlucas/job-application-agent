@@ -165,6 +165,8 @@ test("product SiteHeader nav works from non-home pages", async () => {
   assert.match(source, /href="\/#boundaries"/);
   assert.match(source, /<Link href="\/#process">How it works<\/Link>/);
   assert.match(source, /<Link href="\/#boundaries">Boundaries<\/Link>/);
+  assert.match(source, /foundingCta = true/);
+  assert.match(source, /foundingCta \? <FoundingCheckout compact \/> : null/);
 });
 
 test("jobs empty state offers Install JobAppAgent when unfiltered", async () => {
@@ -277,7 +279,7 @@ test("platform pages publish BreadcrumbList JSON-LD and apex canonicals", async 
   }
 });
 
-test("publishes an indexable jobs board without founding pricing", async () => {
+test("publishes an indexable jobs board with shared site chrome", async () => {
   const previous = process.env.USE_JOBS_BOARD_FIXTURES;
   process.env.USE_JOBS_BOARD_FIXTURES = "1";
   try {
@@ -287,12 +289,20 @@ test("publishes an indexable jobs board without founding pricing", async () => {
     assert.match(html, /Open roles, reviewed/);
     assert.match(html, /canonical" href="https:\/\/jobappagent\.com\/jobs"/);
     assert.doesNotMatch(html, /name="robots" content="noindex/);
-    // Jobs chrome must not surface founding pricing. Avoid matching
-    // framework module ids like FoundingCheckout in not-found RSC fallbacks.
+    // Shared SiteHeader nav without founding CTA on /jobs* (+ phone Menu toggle).
+    assert.match(html, /stats\.jobappagent\.com/);
+    assert.match(html, /How it works/);
+    assert.match(html, /Boundaries/);
+    assert.match(html, /site-nav-jobs/);
+    assert.match(html, /site-mobile-menu/);
+    assert.match(html, /<summary>Menu<\/summary>/);
+    // Whole page must stay free of founding pricing (header included).
     assert.doesNotMatch(html, /\$49|Reserve for \$49|Reserve founding|Founding reservation|FOUNDING RESERVATION/i);
     assert.doesNotMatch(html, /contributor_hash|contributorHash/);
     assert.match(html, /Reviewed and live, checked daily|Apply with your agent|Roles reviewed by maintainers/);
     assert.match(html, /Example Labs|Senior Backend Engineer/);
+    // List-row apply CTAs are outline secondary; solid primary stays on detail.
+    assert.match(html, /button button-secondary[^>]*>Apply with your agent/);
 
     const closed = await render("/jobs/example-mark-product-designer-eeeeeeeeeeeeeeee");
     assert.equal(closed.status, 200);
