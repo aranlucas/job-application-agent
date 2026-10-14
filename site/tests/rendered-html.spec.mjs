@@ -170,14 +170,56 @@ test("server-renders the branded community dashboard", async () => {
   assert.doesNotMatch(html, /Install agent|Open source on GitHub/i);
 });
 
-test("publishes crawler guidance and a canonical sitemap", async () => {
-  const [robots, sitemap] = await Promise.all([render("/robots.txt"), render("/sitemap.xml")]);
+test("publishes crawler guidance and a host-local apex sitemap", async () => {
+  const [robots, sitemap, statsSitemap] = await Promise.all([
+    render("/robots.txt"),
+    render("/sitemap.xml"),
+    render("/stats-sitemap.xml"),
+  ]);
   assert.equal(robots.status, 200);
   assert.equal(sitemap.status, 200);
+  assert.equal(statsSitemap.status, 200);
   assert.match(await robots.text(), /Disallow: \/api\//);
   const sitemapXml = await sitemap.text();
   assert.match(sitemapXml, /https:\/\/jobappagent\.com\/privacy/);
-  assert.match(sitemapXml, /https:\/\/stats\.jobappagent\.com/);
+  assert.doesNotMatch(sitemapXml, /stats\.jobappagent\.com/);
+  const statsXml = await statsSitemap.text();
+  assert.match(statsXml, /https:\/\/stats\.jobappagent\.com\//);
+  assert.doesNotMatch(statsXml, /jobappagent\.com\/platforms/);
+});
+
+test("homepage head includes apex canonical and schema.org JSON-LD without offers", async () => {
+  const response = await render("/");
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /rel="canonical" href="https:\/\/jobappagent\.com\/?"/);
+  assert.match(html, /type="application\/ld\+json"/);
+  assert.match(html, /"@type":"Organization"/);
+  assert.match(html, /"@type":"WebSite"/);
+  assert.match(html, /"@type":"SoftwareApplication"/);
+  assert.doesNotMatch(html, /"@type":"SoftwareApplication"[^<]*"offers"/);
+  assert.doesNotMatch(html, /"@type":"Offer"/);
+
+  const ldBlocks = [...html.matchAll(/type="application\/ld\+json"[^>]*>([^<]+)</g)].map((match) => match[1]);
+  assert.ok(ldBlocks.length >= 1);
+  for (const raw of ldBlocks) {
+    const parsed = JSON.parse(raw.replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&"));
+    const nodes = parsed["@graph"] ?? [parsed];
+    for (const node of nodes) {
+      assert.equal(typeof node["@type"], "string");
+      assert.equal("offers" in node, false);
+      assert.equal("price" in node, false);
+    }
+  }
+});
+
+test("platform pages publish BreadcrumbList JSON-LD and apex canonicals", async () => {
+  for (const path of ["/platforms", "/platforms/grok"]) {
+    const html = await (await render(path)).text();
+    assert.match(html, new RegExp(`rel="canonical" href="https://jobappagent.com${path}"`));
+    assert.match(html, /"@type":"BreadcrumbList"/);
+    assert.match(html, /ListItem/);
+  }
 });
 
 test("provides an unlisted, non-indexable published jobs page", async () => {

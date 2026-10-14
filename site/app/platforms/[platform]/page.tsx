@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import catalog from "../../../../job-application-agent/platforms.json";
+import { JsonLd } from "../../components/JsonLd";
+import { breadcrumbListJsonLd } from "../../../lib/structured-data.mjs";
 import styles from "../platforms.module.css";
 
 type Props = { params: Promise<{ platform: string }> };
@@ -19,7 +21,13 @@ export default async function PlatformGuide({ params }: Props) {
   if (!platform) notFound();
   const prompt = `${platform.starter}\n\n${catalog.instructions}`;
   const templateUrl = "templateUrl" in platform ? platform.templateUrl : undefined;
+  const breadcrumbs = breadcrumbListJsonLd([
+    { name: "Home", path: "/" },
+    { name: "Platforms", path: "/platforms" },
+    { name: platform.name, path: `/platforms/${platform.id}` },
+  ]);
   return <main className={`legal page-width ${styles.guide}`}>
+    <JsonLd data={breadcrumbs} />
     <Link className="legal-back" href="/platforms">← All agent setup guides</Link>
     <p className="eyebrow">{platform.name}</p>
     <p className={styles.status}>{platform.status}</p>

@@ -9,7 +9,15 @@ import { getAttentionSignal } from "../../../lib/attention-signal-store";
 import type { AttentionView } from "./AttentionActions";
 import { BuyerFlow } from "./BuyerFlow";
 
-export const metadata: Metadata = { title: "Your applications", robots: { index: false, follow: false } };
+export async function generateMetadata({ params }: { params: Promise<{ id: string }> }): Promise<Metadata> {
+  const attentionId = decodeURIComponent((await params).id ?? "").trim();
+  const path = attentionId ? `/attention/${encodeURIComponent(attentionId)}` : "/attention";
+  return {
+    title: "Your applications",
+    robots: { index: false, follow: false },
+    alternates: { canonical: `https://jobappagent.com${path}` },
+  };
+}
 
 export default async function AttentionPage({ params, searchParams }: {
   params: Promise<{ id: string }>;

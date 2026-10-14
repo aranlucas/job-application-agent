@@ -1,7 +1,10 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
-export const metadata: Metadata = { title: "Terms" };
+export const metadata: Metadata = {
+  title: "Terms",
+  alternates: { canonical: "https://jobappagent.com/terms" },
+};
 
 export default function Terms() {
   return <main className="legal page-width">
