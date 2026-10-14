@@ -127,9 +127,24 @@ export async function verifyAttentionMagicLink(token, secret, options = {}) {
     return { ok: false, error: "token_invalid" };
   }
 
+  const normalizedPayload = {
+    attentionId: payload.aid,
+    company: String(payload.company ?? ""),
+    role: String(payload.role ?? ""),
+    url: String(payload.url ?? ""),
+    stage: String(payload.stage ?? ""),
+    blocker: String(payload.blocker ?? ""),
+    requiredActions: normalizeActions(payload.requiredActions),
+    questions: normalizeAttentionQuestions(payload.questions),
+    aiAssistanceDiscouraged: Boolean(payload.aiAssistanceDiscouraged),
+    issuedAt: payload.iat,
+    expiresAt: payload.exp,
+  };
+
   const now = Number.isFinite(options.now) ? options.now : Math.floor(Date.now() / 1000);
   if (!Number.isFinite(payload.exp) || payload.exp < now) {
-    return { ok: false, error: "token_expired" };
+    // Keep payload on expiry so the site can confirm whether the application is still waiting.
+    return { ok: false, error: "token_expired", payload: normalizedPayload };
   }
 
   if (options.attentionId && options.attentionId !== payload.aid) {
@@ -138,19 +153,7 @@ export async function verifyAttentionMagicLink(token, secret, options = {}) {
 
   return {
     ok: true,
-    payload: {
-      attentionId: payload.aid,
-      company: String(payload.company ?? ""),
-      role: String(payload.role ?? ""),
-      url: String(payload.url ?? ""),
-      stage: String(payload.stage ?? ""),
-      blocker: String(payload.blocker ?? ""),
-      requiredActions: normalizeActions(payload.requiredActions),
-      questions: normalizeAttentionQuestions(payload.questions),
-      aiAssistanceDiscouraged: Boolean(payload.aiAssistanceDiscouraged),
-      issuedAt: payload.iat,
-      expiresAt: payload.exp,
-    },
+    payload: normalizedPayload,
   };
 }
 

@@ -124,6 +124,60 @@ test("attention missing-token UI includes a Back home recovery CTA", async () =>
   assert.match(source, /needs a secure token/i);
 });
 
+test("attention invalid/expired copy avoids jargon and points to the latest email", async () => {
+  const source = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/attention/[id]/page.tsx", import.meta.url), "utf8"),
+  );
+  assert.match(source, /This link has expired/);
+  assert.match(source, /still paused and waiting for your answer/);
+  assert.match(source, /Nothing was submitted from this link/);
+  assert.match(source, /Find the newest JobAppAgent email/);
+  assert.match(source, /This page cannot open your inbox/);
+  assert.match(source, /Open the inbox where you receive JobAppAgent mail/);
+  assert.match(source, /button button-secondary[^>]*>Go to JobAppAgent home/);
+  assert.match(source, /site-shell/);
+  assert.match(source, /SiteHeader/);
+  assert.match(source, /SiteFooter/);
+  assert.doesNotMatch(source, /Open the latest email from JobAppAgent/);
+  assert.doesNotMatch(source, /This attention link is not valid/);
+});
+
+test("branded 404 page uses plain recovery copy and site CTAs", async () => {
+  const source = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/not-found.tsx", import.meta.url), "utf8"),
+  );
+  assert.match(source, /We can’t find that page/);
+  assert.match(source, /Your agent and applications aren’t affected/);
+  assert.match(source, /Go to JobAppAgent home/);
+  assert.match(source, /Browse published jobs/);
+  assert.match(source, /href="\/jobs"/);
+  assert.match(source, /SiteHeader/);
+  assert.match(source, /SiteFooter/);
+  assert.match(source, /site-shell/);
+});
+
+test("product SiteHeader nav works from non-home pages", async () => {
+  const source = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/components/SiteChrome.tsx", import.meta.url), "utf8"),
+  );
+  assert.match(source, /href=\{community \? "https:\/\/jobappagent\.com" : "\/#top"\}/);
+  assert.match(source, /href="\/#process"/);
+  assert.match(source, /href="\/#boundaries"/);
+  assert.match(source, /<Link href="\/#process">How it works<\/Link>/);
+  assert.match(source, /<Link href="\/#boundaries">Boundaries<\/Link>/);
+});
+
+test("jobs empty state offers Install JobAppAgent when unfiltered", async () => {
+  const source = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/jobs/PublishedJobs.tsx", import.meta.url), "utf8"),
+  );
+  assert.match(source, /No published jobs right now/);
+  assert.match(source, /New listings appear here as the community publishes them/);
+  assert.match(source, /Install JobAppAgent/);
+  assert.match(source, /jobappagent\.com\/platforms/);
+  assert.match(source, /Clear filters/);
+});
+
 test("attention design harness and judgment have no operational preview actions", async () => {
   const fs = await import("node:fs/promises");
   const page = await fs.readFile(new URL("../app/attention/[id]/page.tsx", import.meta.url), "utf8");

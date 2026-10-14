@@ -60,10 +60,12 @@ test("rejects forged, mismatched, and expired magic links", async () => {
     now: 1_700_000_000,
   })).error, "token_mismatch");
 
-  assert.equal((await verifyAttentionMagicLink(signed.token, SECRET, {
+  const expired = await verifyAttentionMagicLink(signed.token, SECRET, {
     attentionId: "attention-abc",
     now: 1_700_000_100,
-  })).error, "token_expired");
+  });
+  assert.equal(expired.error, "token_expired");
+  assert.equal(expired.payload?.attentionId, "attention-abc");
 
   assert.equal((await signAttentionMagicLink({ attentionId: "x" }, "short")).ok, false);
 });
