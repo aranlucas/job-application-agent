@@ -38,3 +38,12 @@ coverage/
 *.tmp
 *.swp
 .gstack/
+
+# Site / vinext build output (never commit; CI builds fresh)
+site/dist/
+site/.next/
+site/.vinext/
+site/tsconfig.tsbuildinfo
+site/out/
+site/outputs/
+site/work/
