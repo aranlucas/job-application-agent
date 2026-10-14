@@ -19,6 +19,7 @@ import {
   telemetryApplicationPaused,
   telemetryApplicationSkipped,
   telemetryApplicationStarted,
+  telemetryApplicationSubmitted,
   telemetryErrorCategory,
   telemetryErrorCode,
   telemetryJobAssessed,
@@ -740,7 +741,13 @@ test('acknowledges a generated review only through the explicit CLI command', as
 
 test('maps commands and durations to bounded telemetry categories', () => {
   assert.equal(commandCategory(['ledger', 'add', '--stdin']), 'apply');
+  assert.equal(commandCategory(['ledger', 'check', '--stdin']), 'check');
+  assert.equal(commandCategory(['ledger', 'delivery', '--stdin']), 'delivery');
+  assert.equal(commandCategory(['ledger', 'retry', '--stdin']), 'delivery');
+  assert.equal(commandCategory(['ledger', 'deliveries']), 'delivery');
   assert.equal(commandCategory(['ledger', 'outcome', '--stdin']), 'outcome');
+  assert.equal(commandCategory(['attention', 'add', '--stdin']), 'attention');
+  assert.equal(commandCategory(['friction', 'record', '--stdin']), 'friction');
   assert.equal(commandCategory(['score', '--stdin']), 'assess');
   assert.equal(commandCategory(['sources', 'list']), 'search');
   assert.equal(durationBucket(700), 'under-1s');
@@ -757,6 +764,37 @@ test('maps commands and durations to bounded telemetry categories', () => {
   assert.equal(telemetryErrorCode(new Error('Cloud state request failed (503): upstream')), 'network_failure');
   assert.equal(telemetryErrorCode(new Error('Cloud state unavailable: fetch failed')), 'network_failure');
   assert.equal(telemetryErrorCode(new Error('Resume export failed with HTTP 500.')), 'upload_failed');
+});
+
+test('application_submitted uses null/unknown when telemetry is omitted', async () => {
+  const entry = {
+    company: 'Example', role: 'Engineer', url: 'https://jobs.example.com/null-telemetry',
+    source: 'lever', approval: 'STANDING AUTHORIZATION', answers: {},
+  };
+  const missing = await telemetryApplicationSubmitted(entry, { telemetrySupplied: false });
+  assert.equal(missing.properties.telemetrySupplied, false);
+  assert.equal(missing.properties.fieldsFilled, null);
+  assert.equal(missing.properties.shortAnswerCount, null);
+  assert.equal(missing.properties.resumeUploaded, null);
+  assert.equal(missing.properties.durationBucket, 'unknown');
+
+  const fromLifecycle = await telemetryApplicationSubmitted(entry, {
+    telemetrySupplied: false,
+    lifecycleStartedAt: new Date(Date.now() - 90_000).toISOString(),
+  });
+  assert.equal(fromLifecycle.properties.durationBucket, '1-2m');
+  assert.equal(fromLifecycle.properties.fieldsFilled, null);
+
+  const supplied = await telemetryApplicationSubmitted(entry, {
+    telemetrySupplied: true,
+    fieldsFilled: 9,
+    resumeUploaded: true,
+    shortAnswerCount: 2,
+    durationBucket: '5-15m',
+  });
+  assert.equal(supplied.properties.telemetrySupplied, true);
+  assert.equal(supplied.properties.fieldsFilled, 9);
+  assert.equal(supplied.properties.durationBucket, '5-15m');
 });
 
 test('builds a structured assessment event without description or candidate profile data', async () => {

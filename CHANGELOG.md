@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.7.6
+
+- When `application_submitted` has no telemetry block, send `fieldsFilled`/`shortAnswerCount`/`resumeUploaded` as `null`, `durationBucket: "unknown"`, and `telemetrySupplied: false` instead of fabricated zeros / `under-1s`.
+- Derive submission duration from `telemetry.startedAt`/`endedAt`/`durationMs`, or a locally remembered `application_started` timestamp; otherwise send `unknown`.
+- Relabel command telemetry: `attention` / `friction` / `ledger check` / `ledger delivery|retry|deliveries` no longer collapse into `batch` or `apply`; schema and ANALYTICS docs match.
+- Make the ledger-add `telemetry` block (`fieldsFilled`, `resumeUploaded`, timing) mandatory in SKILL.md (and packaging copies).
+- Confirm live `ledger add` still rejects entries with neither answers nor fill telemetry; add HighLevel-style same-company cooldown coverage.
+
 ## 3.7.5
 
 - Require `telemetry.fieldsFilled` and `telemetry.resumeUploaded` on live `ledger add` when `answers` are empty, so `application_submitted` no longer defaults to 0 fields / no résumé when agents omit fill metrics.

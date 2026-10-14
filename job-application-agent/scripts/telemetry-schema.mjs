@@ -10,8 +10,9 @@ export const TELEMETRY_MAX_BYTES = 4096;
 const values = (...items) => new Set(items);
 const ATS = values('linkedin', 'greenhouse', 'lever', 'ashby', 'workable', 'comeet', 'workday', 'rippling', 'smartrecruiters', 'google-form', 'company', 'email', 'other');
 const SOURCES = values('direct-company', 'linkedin', 'x', 'hacker-news', 'yc', 'job-board', 'aggregator', 'company', 'email', 'referral', 'user-supplied', 'web-search', 'other');
-const DURATIONS = values('under-1s', '1-5s', '5-30s', '30-60s', '1-2m', '2-5m', '5-15m', '15m-plus');
-const COMMANDS = values('onboard', 'search', 'assess', 'apply', 'batch', 'round', 'outcome', 'review', 'resume', 'profile', 'telemetry', 'other');
+const DURATIONS = values('under-1s', '1-5s', '5-30s', '30-60s', '1-2m', '2-5m', '5-15m', '15m-plus', 'unknown');
+// `batch` remains accepted for historical/queued events; new emits use attention/friction/delivery/check.
+const COMMANDS = values('onboard', 'search', 'assess', 'apply', 'batch', 'attention', 'friction', 'delivery', 'check', 'round', 'outcome', 'review', 'resume', 'profile', 'telemetry', 'other');
 const RESULTS = values('success', 'paused', 'skipped', 'abandoned', 'error');
 const ELIGIBILITY = values('eligible', 'unclear', 'ineligible');
 const DECISIONS = values('review', 'ask', 'skip', 'exclude');
@@ -38,7 +39,9 @@ const CONCENTRATION_REASONS = values('stronger-fit', 'alternatives-exhausted', '
 
 const text = (max, identitySafe = false) => ({ kind: 'text', max, identitySafe });
 const integer = (min, max) => ({ kind: 'integer', min, max });
+const nullableInteger = (min, max) => ({ kind: 'nullable-integer', min, max });
 const boolean = { kind: 'boolean' };
+const nullableBoolean = { kind: 'nullable-boolean' };
 const enumValue = (set) => ({ kind: 'enum', set });
 const enumArray = (set, max = 12) => ({ kind: 'enum-array', set, max });
 
@@ -82,7 +85,17 @@ export const EVENT_SCHEMAS = {
   application_step: { required: { jobHash: { kind: 'hash' }, ats: enumValue(ATS), stage: enumValue(STAGES), fieldCategory: enumValue(FIELD_CATEGORIES), retryCount: integer(0, 20), durationBucket: enumValue(DURATIONS) } },
   application_paused: { required: { jobHash: { kind: 'hash' }, ats: enumValue(ATS), stage: enumValue(STAGES), reason: enumValue(PAUSE_REASONS) } },
   application_skipped: { required: { jobHash: { kind: 'hash' }, reason: enumValue(SKIP_REASONS), fitScore: integer(0, 100), eligibility: enumValue(ELIGIBILITY) } },
-  application_submitted: { required: { ...JOB, durationBucket: enumValue(DURATIONS), fieldsFilled: integer(0, 500), shortAnswerCount: integer(0, 100), resumeUploaded: boolean, approvalMode: enumValue(APPROVAL_MODES) } },
+  application_submitted: {
+    required: {
+      ...JOB,
+      durationBucket: enumValue(DURATIONS),
+      fieldsFilled: nullableInteger(0, 500),
+      shortAnswerCount: nullableInteger(0, 100),
+      resumeUploaded: nullableBoolean,
+      approvalMode: enumValue(APPROVAL_MODES),
+      telemetrySupplied: boolean,
+    },
+  },
   round_completed: { required: { requestedCount: integer(1, 1000), submittedCount: integer(0, 1000), assessedCount: integer(0, 10000), skippedCount: integer(0, 10000), pausedCount: integer(0, 10000), errorCount: integer(0, 10000), durationBucket: enumValue(DURATIONS) }, optional: { attemptedSourceCount: integer(0, 10000), searchedSourceCount: integer(0, 10000), blockedSourceCount: integer(0, 10000), maxSourceSharePercent: integer(0, 100), concentrationReason: enumValue(CONCENTRATION_REASONS) } },
   outcome_recorded: {
     required: { ...JOB, outcome: enumValue(OUTCOMES), daysSinceSubmission: integer(0, 3650) },
@@ -117,8 +130,18 @@ function validateProperty(name, value, rule) {
     if (!Number.isInteger(value) || value < rule.min || value > rule.max) throw new Error(`${name} must be an integer from ${rule.min} to ${rule.max}.`);
     return value;
   }
+  if (rule.kind === 'nullable-integer') {
+    if (value === null) return null;
+    if (!Number.isInteger(value) || value < rule.min || value > rule.max) throw new Error(`${name} must be null or an integer from ${rule.min} to ${rule.max}.`);
+    return value;
+  }
   if (rule.kind === 'boolean') {
     if (typeof value !== 'boolean') throw new Error(`${name} must be a Boolean.`);
+    return value;
+  }
+  if (rule.kind === 'nullable-boolean') {
+    if (value === null) return null;
+    if (typeof value !== 'boolean') throw new Error(`${name} must be null or a Boolean.`);
     return value;
   }
   if (rule.kind === 'enum') {

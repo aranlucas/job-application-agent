@@ -138,24 +138,50 @@ export class TelemetryClient {
     await chmod(this.stateDir, 0o700);
   }
 
-  async readLifecycleDedupe() {
+  async readLifecycleState() {
     try {
       const value = JSON.parse(await readFile(this.dedupePath, 'utf8'));
       const keys = Array.isArray(value?.keys) ? value.keys.filter((key) => typeof key === 'string') : [];
-      return keys.slice(-DEDUPE_MAX_KEYS);
+      const startedEntries = value?.startedAtByJobHash && typeof value.startedAtByJobHash === 'object' && !Array.isArray(value.startedAtByJobHash)
+        ? Object.entries(value.startedAtByJobHash).filter(([jobHash, at]) => typeof jobHash === 'string' && typeof at === 'string' && !Number.isNaN(Date.parse(at)))
+        : [];
+      return {
+        keys: keys.slice(-DEDUPE_MAX_KEYS),
+        startedAtByJobHash: Object.fromEntries(startedEntries.slice(-DEDUPE_MAX_KEYS)),
+      };
     } catch (error) {
-      if (error?.code === 'ENOENT') return [];
-      return [];
+      if (error?.code !== 'ENOENT') this.debugLog(`lifecycle state unreadable (${error.message}); resetting`);
+      return { keys: [], startedAtByJobHash: {} };
     }
   }
 
-  async rememberLifecycleDedupe(key) {
-    if (!key) return;
+  async readLifecycleDedupe() {
+    return (await this.readLifecycleState()).keys;
+  }
+
+  async rememberLifecycleDedupe(key, { applicationStartedAt } = {}) {
+    if (!key && !applicationStartedAt) return;
     await this.ensureDirectory();
-    const keys = await this.readLifecycleDedupe();
-    if (keys.includes(key)) return;
-    keys.push(key);
-    await writePrivate(this.dedupePath, { version: 1, keys: keys.slice(-DEDUPE_MAX_KEYS) });
+    const state = await this.readLifecycleState();
+    const keys = [...state.keys];
+    if (key && !keys.includes(key)) keys.push(key);
+    const startedAtByJobHash = { ...state.startedAtByJobHash };
+    if (applicationStartedAt?.jobHash && applicationStartedAt?.at) {
+      startedAtByJobHash[applicationStartedAt.jobHash] = applicationStartedAt.at;
+    }
+    const prunedStarted = Object.fromEntries(Object.entries(startedAtByJobHash).slice(-DEDUPE_MAX_KEYS));
+    await writePrivate(this.dedupePath, {
+      version: 1,
+      keys: keys.slice(-DEDUPE_MAX_KEYS),
+      startedAtByJobHash: prunedStarted,
+    });
+  }
+
+  /** ISO timestamp when application_started was recorded for this job hash, if known locally. */
+  async applicationStartedAt(jobHash) {
+    if (typeof jobHash !== 'string' || !jobHash) return null;
+    const state = await this.readLifecycleState();
+    return state.startedAtByJobHash[jobHash] ?? null;
   }
 
   async explicitOptOut() {
@@ -549,8 +575,10 @@ export class TelemetryClient {
     }
     const config = await this.readConfig();
     const result = await this.sendValidated(event, session, config, { queueOnFailure: true });
-    if (dedupeKey && (result.sent || result.reason === 'unavailable')) {
-      await this.rememberLifecycleDedupe(dedupeKey);
+    if ((dedupeKey || event.event === 'application_started') && (result.sent || result.reason === 'unavailable')) {
+      await this.rememberLifecycleDedupe(dedupeKey, event.event === 'application_started'
+        ? { applicationStartedAt: { jobHash: event.properties.jobHash, at: this.now().toISOString() } }
+        : {});
     }
     return { sent: result.sent, reason: result.reason };
   }

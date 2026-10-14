@@ -61,7 +61,7 @@ Company and title values are bounded and rejected when they resemble an email, p
 | Event | Structured properties |
 |---|---|
 | `installation_started` | OS family, Node major version, submission mode |
-| `command_completed` | Command category, result, duration bucket |
+| `command_completed` | Command category (`onboard`, `search`, `assess`, `apply`, `check`, `delivery`, `attention`, `friction`, `round`, `outcome`, `review`, `resume`, `profile`, `telemetry`, `other`; legacy `batch` still accepted), result, duration bucket |
 | `source_checked` | Allowlisted packaged source ID or `community`, searched/blocked status, reviewed/qualified counts, optional bounded blocker |
 | `job_discovered` | Company, title, job hash/domain, ATS/source, job country, work mode, seniority, employment type, role family, published salary band |
 | `job_assessed` | Company, title, job hash/domain, ATS, fit score, eligibility, decision, match/gap tags |
@@ -69,7 +69,7 @@ Company and title values are bounded and rejected when they resemble an email, p
 | `application_step` | Job hash, ATS, stage, field category, retry count, duration bucket |
 | `application_paused` | Job hash, ATS, stage, bounded reason |
 | `application_skipped` | Job hash, bounded reason, fit score, eligibility |
-| `application_submitted` | Company, title, job hash/domain, ATS, duration, fields filled, short-answer count, resume-upload Boolean, approval mode |
+| `application_submitted` | Company, title, job hash/domain, ATS, duration bucket (or `unknown`), fields filled / short-answer count / résumé Boolean (or `null` when telemetry was omitted), approval mode, `telemetrySupplied` |
 | `round_completed` | Requested/submitted/assessed/skipped/paused/error counts, duration bucket; optional attempted/searched/blocked source counts, maximum source share percentage, bounded concentration reason. `submittedCount` and `assessedCount` are ledger application totals only and never include attached outreach. |
 | `outcome_recorded` | Company, title, job hash/domain, ATS, outcome, days since submission, optional bounded interview quality/failure point |
 | `review_generated` | Canonical unique-submission and outcome counts, review-due Boolean |
@@ -77,7 +77,9 @@ Company and title values are bounded and rejected when they resemble an email, p
 
 Only documented enums, bounded numbers, Booleans, bounded company/title/country strings, and documented tag arrays are accepted. Client and relay both reject unknown properties. Payloads are limited to 4 KB.
 
-`ledger add` accepts `telemetry.durationMs` or `telemetry.startedAt`/`endedAt` so `application_submitted` can report real per-application duration buckets instead of defaulting to `under-1s`. Pass `telemetry.fieldsFilled` and `telemetry.resumeUploaded` on every live confirm (counts and Booleans only). Empty answers with missing fill metrics, or `0` fields with no résumé, are rejected unless `thinSubmissionOverride` is set for a truly empty ATS accept.
+`ledger add` accepts `telemetry.durationMs` or `telemetry.startedAt`/`endedAt` so `application_submitted` can report a real per-application duration bucket. When those are absent, the CLI uses a locally remembered `application_started` timestamp for the same job hash when available; otherwise it sends `durationBucket: "unknown"` (never a fabricated `under-1s`). Pass `telemetry.fieldsFilled` and `telemetry.resumeUploaded` on every live confirm (counts and Booleans only). If the agent omits the telemetry block entirely, analytics send `fieldsFilled`/`shortAnswerCount`/`resumeUploaded` as `null` with `telemetrySupplied: false` rather than fake zeros. Empty answers with missing fill metrics, or `0` fields with no résumé, are rejected for live `ledger add` unless `thinSubmissionOverride` is set for a truly empty ATS accept.
+
+Command categories map CLI areas accurately: `ledger add` → `apply`; `ledger check` → `check`; `ledger delivery`/`retry`/`deliveries` → `delivery`; `attention *` → `attention`; `friction *` → `friction`. Legacy `batch` remains schema-valid for queued historical events only.
 
 ## Processing and retention
 

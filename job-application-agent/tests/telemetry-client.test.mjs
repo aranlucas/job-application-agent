@@ -347,6 +347,7 @@ test('dedupes application_started and application_paused per job attempt when re
   };
   assert.equal(lifecycleDedupeKey(started), `application_started:${'b'.repeat(64)}`);
   assert.equal((await client.record(started, session)).sent, true);
+  assert.match(await client.applicationStartedAt('b'.repeat(64)), /^\d{4}-\d{2}-\d{2}T/);
   assert.deepEqual(await client.record(started, session), { sent: false, reason: 'duplicate' });
   assert.equal((await client.record(paused, session)).sent, true);
   assert.deepEqual(await client.record(paused, session), { sent: false, reason: 'duplicate' });
@@ -357,4 +358,5 @@ test('dedupes application_started and application_paused per job attempt when re
   const lifecycle = eventBodies(relay).filter((body) => ['application_started', 'application_paused'].includes(body.event));
   assert.equal(lifecycle.length, 3);
   assert.ok(logs.some((line) => /duplicate_attempt/i.test(line)));
+  assert.match(await client.applicationStartedAt('b'.repeat(64)), /^\d{4}-\d{2}-\d{2}T/);
 });
