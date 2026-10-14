@@ -132,6 +132,7 @@
   color: var(--muted);
 }
 
+/* Solid primary — detail similar-role rows only (list rows use .button-secondary). */
 .applyBtn {
   justify-self: end;
   min-height: 2.4rem;
@@ -144,6 +145,12 @@
   text-decoration: none;
   display: inline-flex;
   align-items: center;
+}
+
+/* Align shared secondary button in the jobs list grid without restyling it. */
+.rowApply {
+  justify-self: end;
+  white-space: nowrap;
 }
 
 .mobileCard {
@@ -506,66 +513,3 @@
   }
 }
 
-:global(.jobs-nav-links) {
-  display: flex;
-}
-
-:global(.jobs-mobile-menu) {
-  display: none;
-  position: relative;
-}
-
-:global(.jobs-mobile-menu > summary) {
-  list-style: none;
-  cursor: pointer;
-  font: 500 0.72rem/1 var(--font-mono), monospace;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--muted);
-  min-height: 2.75rem;
-  display: inline-flex;
-  align-items: center;
-}
-
-:global(.jobs-mobile-menu > summary::-webkit-details-marker) {
-  display: none;
-}
-
-:global(.jobs-mobile-menu-links) {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 0.35rem);
-  min-width: 11rem;
-  display: grid;
-  gap: 0.15rem;
-  padding: 0.65rem;
-  border: 1px solid var(--line);
-  border-radius: 0.75rem;
-  background: var(--surface);
-  z-index: 30;
-}
-
-:global(.jobs-mobile-menu-links a) {
-  min-height: 2.4rem;
-  display: flex;
-  align-items: center;
-  padding: 0 0.55rem;
-  color: var(--text);
-  text-decoration: none;
-  border-radius: 0.45rem;
-}
-
-:global(.jobs-mobile-menu-links a:hover) {
-  background: var(--accent-soft);
-  color: var(--ink);
-}
-
-@media (max-width: 860px) {
-  :global(.jobs-nav-links) {
-    display: none;
-  }
-
-  :global(.jobs-mobile-menu) {
-    display: block;
-  }
-}

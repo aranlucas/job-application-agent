@@ -8,8 +8,8 @@ import {
   formatReviewedDate,
   locationLabel,
 } from "../../lib/live-jobs.mjs";
+import { SiteFooter, SiteHeader } from "../components/SiteChrome";
 import styles from "./jobs.module.css";
-import { JobsBoardFooter, JobsBoardHeader } from "./JobsBoardChrome";
 
 export type BoardJob = {
   jobId: string;
@@ -32,8 +32,10 @@ export type BoardJob = {
 };
 
 function JobApplyLink({ job }: { job: BoardJob }) {
+  // List rows use outline secondary so role titles stay dominant on phone;
+  // the solid primary CTA stays on /jobs/[slug].
   return (
-    <Link href={`/jobs/${job.slug}`} className={styles.applyBtn}>
+    <Link href={`/jobs/${job.slug}`} className={`button button-secondary ${styles.rowApply}`}>
       Apply with your agent
     </Link>
   );
@@ -112,7 +114,7 @@ export function JobsBoard({
 
   return (
     <div className={styles.container}>
-      <JobsBoardHeader />
+      <SiteHeader />
       <main className={`page-width ${styles.page}`}>
         <header className={styles.header}>
           <h1>Open roles, reviewed.</h1>
@@ -201,7 +203,7 @@ export function JobsBoard({
           </a>
         </p>
       </main>
-      <JobsBoardFooter />
+      <SiteFooter />
     </div>
   );
 }

@@ -65,7 +65,10 @@ jobs:
           jobs_html="$(curl --fail --silent --show-error --retry 6 --retry-all-errors --retry-delay 2 --retry-max-time 30 "$SITE_WORKER_URL/jobs")"
           printf '%s' "$jobs_html" | grep -Fq 'Open roles, reviewed'
           printf '%s' "$jobs_html" | grep -Fq 'jobappagent.com/jobs'
-          ! printf '%s' "$jobs_html" | grep -Eiq 'Reserve for \$49|Founding reservation|noindex'
+          # Shared SiteHeader may carry Reserve for $49; scope offer-copy checks to <main>.
+          ! printf '%s' "$jobs_html" | grep -Eiq 'noindex'
+          jobs_main="$(printf '%s' "$jobs_html" | tr '\n' ' ' | sed -n 's/.*<main[^>]*>\(.*\)<\/main>.*/\1/p')"
+          ! printf '%s' "$jobs_main" | grep -Eiq 'Reserve for \$49|Founding reservation'
           sitemap_xml="$(curl --fail --silent --show-error --retry 6 --retry-all-errors --retry-delay 2 --retry-max-time 30 "$SITE_WORKER_URL/sitemap.xml")"
           printf '%s' "$sitemap_xml" | grep -Fq 'https://jobappagent.com/jobs'
           community_html="$(curl --fail --silent --show-error --retry 6 --retry-all-errors --retry-delay 2 --retry-max-time 30 "$SITE_WORKER_URL/community-view")"

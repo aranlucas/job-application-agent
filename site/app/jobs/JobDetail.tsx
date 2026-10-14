@@ -8,8 +8,8 @@ import {
 } from "../../lib/live-jobs.mjs";
 import { buildApplyPastePrompt, shortenUrlForDisplay } from "../../lib/job-apply-copy.mjs";
 import { CopyButton } from "./CopyButton";
+import { SiteFooter, SiteHeader } from "../components/SiteChrome";
 import styles from "./jobs.module.css";
-import { JobsBoardFooter, JobsBoardHeader } from "./JobsBoardChrome";
 import type { BoardJob } from "./JobsBoard";
 
 const INSTALL_CMD = "npx job-application-agent@latest install";
@@ -120,7 +120,7 @@ export function JobDetail({
 
   return (
     <div className={styles.container}>
-      <JobsBoardHeader />
+      <SiteHeader />
       <main className={`page-width ${styles.page}`}>
         <script
           type="application/ld+json"
@@ -205,7 +205,7 @@ export function JobDetail({
           </div>
         )}
       </main>
-      <JobsBoardFooter />
+      <SiteFooter />
     </div>
   );
 }

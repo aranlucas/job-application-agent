@@ -1,8 +1,8 @@
 import type { ReactNode } from "react";
 
 /**
- * Jobs surfaces stay anonymous: no founding CTA in chrome, and child pages
- * opt out of landing analytics via the JobsAnalyticsGate below.
+ * Jobs surfaces opt out of landing pageview analytics via JobsAnalyticsGate.
+ * Chrome matches the rest of the site (shared SiteHeader / SiteFooter).
  */
 export default function JobsLayout({ children }: { children: ReactNode }) {
   return (
