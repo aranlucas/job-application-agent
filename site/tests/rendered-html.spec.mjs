@@ -145,6 +145,20 @@ test("branded 404 page uses plain recovery copy and site CTAs", async () => {
   assert.match(source, /Go to JobAppAgent home/);
   assert.match(source, /Browse published jobs/);
   assert.match(source, /href="\/jobs"/);
+  assert.match(source, /SiteHeader/);
+  assert.match(source, /SiteFooter/);
+  assert.match(source, /site-shell/);
+});
+
+test("product SiteHeader nav works from non-home pages", async () => {
+  const source = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../app/components/SiteChrome.tsx", import.meta.url), "utf8"),
+  );
+  assert.match(source, /href=\{community \? "https:\/\/jobappagent\.com" : "\/#top"\}/);
+  assert.match(source, /href="\/#process"/);
+  assert.match(source, /href="\/#boundaries"/);
+  assert.match(source, /<Link href="\/#process">How it works<\/Link>/);
+  assert.match(source, /<Link href="\/#boundaries">Boundaries<\/Link>/);
 });
 
 test("jobs empty state offers Install JobAppAgent when unfiltered", async () => {

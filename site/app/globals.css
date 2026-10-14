@@ -447,12 +447,18 @@ footer a { min-width: 2.75rem; min-height: 2.75rem; margin-left: 1.25rem; paddin
 }
 .attention-error-help li { margin: .35rem 0; }
 
+/* Full-height product shell so 404 keeps the same nav + footer chrome as other pages. */
+.site-shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
 .not-found-page {
+  flex: 1;
   padding-block: 4.5rem 6rem;
   display: grid;
   justify-items: center;
   align-content: center;
-  min-height: min(70vh, 36rem);
 }
 .not-found-panel {
   width: min(100%, 28rem);

@@ -8,10 +8,10 @@ export const metadata: Metadata = {
 };
 
 export default function NotFound() {
-  return <>
+  return <div className="site-shell">
     <SiteHeader />
-    <main className="page-width not-found-page">
-      <section className="not-found-panel" aria-labelledby="not-found-title">
+    <main className="not-found-page">
+      <section className="page-width not-found-panel" aria-labelledby="not-found-title">
         <h1 id="not-found-title">We can’t find that page</h1>
         <p>The link may be old or mistyped. Your agent and applications aren’t affected.</p>
         <div className="not-found-actions">
@@ -21,5 +21,5 @@ export default function NotFound() {
       </section>
     </main>
     <SiteFooter />
-  </>;
+  </div>;
 }
