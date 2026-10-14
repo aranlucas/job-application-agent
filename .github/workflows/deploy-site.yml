@@ -84,3 +84,27 @@ jobs:
           ! printf '%s' "$community_html$home_html" | grep -Eiq 'Activate founding access|Reserve 90-day access|WINDOW OPEN|HOSTED OPEN|VERIFYING|Hosted \+ cloud sequence|Hosted continuity'
         env:
           SITE_WORKER_URL: https://job-application-agent-site.varora1406.workers.dev
+      - name: Alert if jobs liveness is stale (>26h)
+        # Soft-fail visibility on deploy: exits non-zero so the deploy job fails when
+        # the newest published lastCheckedAt is missing or older than 26 hours.
+        env:
+          TELEMETRY_PRODUCTION_URL: https://job-application-agent-telemetry.varora1406.workers.dev
+        run: |
+          set -euo pipefail
+          body="$(curl --fail --silent --show-error --retry 3 --retry-delay 2 \
+            "$TELEMETRY_PRODUCTION_URL/v1/jobs/live?limit=1")"
+          node -e '
+            const maxAgeMs = 26 * 60 * 60 * 1000;
+            const j = JSON.parse(process.argv[1]);
+            const newest = j?.meta?.newestLastCheckedAt ?? null;
+            if (newest == null) {
+              console.error("FAIL: meta.newestLastCheckedAt is null — run Jobs liveness sweep.");
+              process.exit(1);
+            }
+            const ageMs = Date.now() - Date.parse(newest);
+            console.log(JSON.stringify({ newestLastCheckedAt: newest, ageHours: +(ageMs / 3600000).toFixed(3) }));
+            if (!Number.isFinite(ageMs) || ageMs > maxAgeMs) {
+              console.error("FAIL: newest lastCheckedAt is older than 26 hours.");
+              process.exit(1);
+            }
+          ' "$body"

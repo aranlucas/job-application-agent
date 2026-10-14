@@ -1,16 +1,20 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildApplyPastePrompt, shortenUrlForDisplay } from '../lib/job-apply-copy.mjs';
+import { buildApplyCliCommand, buildApplyPastePrompt, shortenUrlForDisplay } from '../lib/job-apply-copy.mjs';
 
 test('paste prompt keeps the full apply URL for clipboard', () => {
-  const url = 'https://boards.greenhouse.io/exampleco/jobs/1001';
+  const url = 'https://job-boards.greenhouse.io/exampleco/jobs/1001';
   assert.equal(buildApplyPastePrompt(url), `Apply to this role in review mode: ${url}`);
 });
 
-test('display URL shortens long paths without changing the copy payload', () => {
-  const url = 'https://boards.greenhouse.io/exampleco/jobs/1001?gh_jid=very-long-tracking-token-abcdef';
-  const shown = shortenUrlForDisplay(url, 24);
-  assert.match(shown, /^boards\.greenhouse\.io/);
-  assert.ok(shown.length < url.length);
-  assert.equal(buildApplyPastePrompt(url).includes(url), true);
+test('apply CLI command keeps the full URL for clipboard', () => {
+  const url = 'https://job-boards.greenhouse.io/exampleco/jobs/1001';
+  assert.equal(buildApplyCliCommand(url), `npx job-application-agent@latest apply ${url}`);
+});
+
+test('shortenUrlForDisplay clips long paths but keeps host', () => {
+  const url = 'https://job-boards.greenhouse.io/exampleco/jobs/1001-with-a-very-long-path-suffix';
+  const short = shortenUrlForDisplay(url, 20);
+  assert.match(short, /^job-boards\.greenhouse\.io/);
+  assert.ok(short.length < url.length);
 });

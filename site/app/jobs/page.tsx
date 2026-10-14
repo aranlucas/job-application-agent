@@ -1,15 +1,39 @@
 import type { Metadata } from "next";
 import { JobsBoard } from "./JobsBoard";
 import { loadJobsBoard } from "../../lib/load-jobs-board.mjs";
+import { TRUST_LINE } from "../../lib/live-jobs.mjs";
 
 export const dynamic = "force-dynamic";
 
+const JOBS_TITLE = "Open roles";
+const JOBS_DESCRIPTION = `Maintainer-reviewed open roles from the JobAppAgent community registry. ${TRUST_LINE}.`;
+const JOBS_URL = "https://jobappagent.com/jobs";
+
 export const metadata: Metadata = {
-  title: "Open roles",
-  description: "Maintainer-reviewed open roles from the JobAppAgent community registry. Reviewed and live, checked daily.",
-  alternates: { canonical: "https://jobappagent.com/jobs" },
+  title: JOBS_TITLE,
+  description: JOBS_DESCRIPTION,
+  alternates: { canonical: JOBS_URL },
   robots: { index: true, follow: true },
+  openGraph: {
+    title: `${JOBS_TITLE} · JobAppAgent`,
+    description: JOBS_DESCRIPTION,
+    url: JOBS_URL,
+    type: "website",
+    images: [{ url: "/og.png", width: 1200, height: 630, alt: "JobAppAgent open roles" }],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: `${JOBS_TITLE} · JobAppAgent`,
+    description: JOBS_DESCRIPTION,
+    images: ["/og.png"],
+  },
 };
+
+export async function headers() {
+  return {
+    "Cache-Control": "public, s-maxage=300, stale-while-revalidate=900",
+  };
+}
 
 function checkedLabel(iso: string | null) {
   if (!iso) return "";

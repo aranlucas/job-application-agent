@@ -1,0 +1,49 @@
+name: Jobs liveness staleness
+
+# Fail/alert when the newest published-job lastCheckedAt is older than 26 hours.
+on:
+  schedule:
+    - cron: "0 * * * *"
+  workflow_dispatch:
+  # Also run after site deploys so a missed cron is visible on the deploy path.
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fail if newest lastCheckedAt is older than 26h
+        env:
+          TELEMETRY_PRODUCTION_URL: https://job-application-agent-telemetry.varora1406.workers.dev
+          SITE_LIVE_PROXY: https://jobappagent.com/api/community-jobs-live
+        run: |
+          set -euo pipefail
+          body="$(curl --fail --silent --show-error --retry 3 --retry-delay 2 \
+            "${TELEMETRY_PRODUCTION_URL}/v1/jobs/live?limit=1")"
+          echo "$body" | head -c 500
+          echo
+          node -e '
+            const maxAgeMs = 26 * 60 * 60 * 1000;
+            const j = JSON.parse(process.argv[1]);
+            const newest = j?.meta?.newestLastCheckedAt ?? null;
+            if (newest == null) {
+              console.error("FAIL: meta.newestLastCheckedAt is null — liveness sweep has not run.");
+              process.exit(1);
+            }
+            const checked = Date.parse(newest);
+            if (!Number.isFinite(checked)) {
+              console.error("FAIL: newestLastCheckedAt is not a valid ISO timestamp:", newest);
+              process.exit(1);
+            }
+            const ageMs = Date.now() - checked;
+            console.log(JSON.stringify({ newestLastCheckedAt: newest, ageHours: +(ageMs / 3600000).toFixed(3) }));
+            if (ageMs > maxAgeMs) {
+              console.error("FAIL: newest lastCheckedAt is older than 26 hours.");
+              process.exit(1);
+            }
+            console.log("OK: liveness data is fresh.");
+          ' "$body"

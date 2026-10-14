@@ -66,10 +66,44 @@ test('closed job JSON-LD sets validThrough and similar roles exclude self', () =
   assert.equal(jsonLd['@type'], 'JobPosting');
   assert.equal(jsonLd.validThrough, closed.closedAt.slice(0, 10));
   assert.match(jsonLd.description, new RegExp(TRUST_LINE));
+  assert.match(jsonLd.description, new RegExp(closed.company));
+  assert.equal('jobLocationType' in jsonLd && jsonLd.jobLocationType === undefined, false);
 
   const similar = similarOpenRoles(closed, open, 3);
   assert.ok(similar.every((job) => job.jobId !== closed.jobId));
   assert.ok(similar.length <= 3);
+});
+
+test('open remote JobPosting JSON-LD has validThrough, TELECOMMUTE, and country requirements', () => {
+  const jobs = fixtureLiveJobs(now);
+  const remote = jobs.find((job) => job.livenessStatus === 'open' && job.location?.workplace === 'remote');
+  assert.ok(remote);
+  const jsonLd = jobPostingJsonLd(remote);
+  assert.equal(jsonLd.jobLocationType, 'TELECOMMUTE');
+  assert.ok(jsonLd.applicantLocationRequirements);
+  assert.ok(jsonLd.validThrough);
+  assert.match(jsonLd.description, new RegExp(remote.role));
+  assert.match(jsonLd.description, new RegExp(remote.company));
+  if (remote.location?.countries?.[0]) {
+    assert.equal(jsonLd.jobLocation?.address?.addressCountry, remote.location.countries[0].toUpperCase());
+  }
+});
+
+test('validateLiveJobs accepts optional meta.newestLastCheckedAt', () => {
+  const jobs = fixtureLiveJobs(now).map((job) => {
+    const rest = { ...job };
+    delete rest.location;
+    delete rest.slug;
+    return rest;
+  });
+  const ok = validateLiveJobs({
+    version: 1,
+    jobs,
+    nextCursor: null,
+    meta: { newestLastCheckedAt: '2026-10-13T12:00:00.000Z' },
+  });
+  assert.equal(ok.ok, true);
+  assert.equal(ok.data.meta.newestLastCheckedAt, '2026-10-13T12:00:00.000Z');
 });
 
 test('trust wording stays endorsement-safe', () => {

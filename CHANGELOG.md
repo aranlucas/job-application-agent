@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.7.7
+
+- Publish the installer `apply <url>` command (review-mode prompt printer) so `npx job-application-agent@latest apply <url>` works after this release.
+- Batched job-liveness sweep in the telemetry Worker (oldest-checked first, ~50 fetches + D1 `batch` writes per run, cron every 15 minutes) with open/closed/unknown logging, an authenticated admin trigger, and generic HTML checks for non-ATS postings.
+- `/v1/jobs/live` responses include `meta.newestLastCheckedAt` for staleness monitoring.
+
 ## 3.7.6
 
 - When `application_submitted` has no telemetry block, send `fieldsFilled`/`shortAnswerCount`/`resumeUploaded` as `null`, `durationBucket: "unknown"`, and `telemetrySupplied: false` instead of fabricated zeros / `under-1s`.

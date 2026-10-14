@@ -6,49 +6,33 @@ import {
   formatReviewedDate,
   locationLabel,
 } from "../../lib/live-jobs.mjs";
-import { buildApplyPastePrompt, shortenUrlForDisplay } from "../../lib/job-apply-copy.mjs";
+import { buildApplyCliCommand, shortenUrlForDisplay } from "../../lib/job-apply-copy.mjs";
 import { CopyButton } from "./CopyButton";
 import { SiteFooter, SiteHeader } from "../components/SiteChrome";
 import styles from "./jobs.module.css";
 import type { BoardJob } from "./JobsBoard";
 
-const INSTALL_CMD = "npx job-application-agent@latest install";
-
 function ApplyPanel({ job }: { job: BoardJob }) {
-  // Site shows a paste-prompt until `apply` is published on npm; CLI `apply` stays in installer.
-  const pastePrompt = buildApplyPastePrompt(job.url);
-  const pasteDisplay = `Apply to this role in review mode: ${shortenUrlForDisplay(job.url)}`;
+  // `apply <url>` ships in npm 3.7.7+ (review-mode prompt printer).
+  const applyCmd = buildApplyCliCommand(job.url);
+  const applyDisplay = `npx job-application-agent@latest apply ${shortenUrlForDisplay(job.url)}`;
   return (
     <aside className={styles.panel} aria-label="Apply with your agent">
       <h2>Apply with your agent</h2>
       <p className={styles.panelLead}>
-        Install once, then paste the review-mode prompt into your agent. You approve the draft before anything is submitted.
+        Run apply in review mode. You approve the draft before anything is submitted.
       </p>
       <div className={styles.step}>
         <span className={styles.stepNum}>01</span>
         <div className={styles.stepBody}>
-          <div className={styles.stepTitle}>Install JobAppAgent (once)</div>
+          <div className={styles.stepTitle}>Apply in review mode</div>
           <div className={styles.codeRow}>
             <div className={styles.codeScrollWrap}>
               <div className={styles.codeScroll}>
-                <code>{INSTALL_CMD}</code>
+                <code title={applyCmd}>{applyDisplay}</code>
               </div>
             </div>
-            <CopyButton value={INSTALL_CMD} />
-          </div>
-        </div>
-      </div>
-      <div className={styles.step}>
-        <span className={styles.stepNum}>02</span>
-        <div className={styles.stepBody}>
-          <div className={styles.stepTitle}>Paste this into your agent</div>
-          <div className={styles.codeRow}>
-            <div className={styles.codeScrollWrap}>
-              <div className={styles.codeScroll}>
-                <code title={pastePrompt}>{pasteDisplay}</code>
-              </div>
-            </div>
-            <CopyButton value={pastePrompt} />
+            <CopyButton value={applyCmd} />
           </div>
         </div>
       </div>
