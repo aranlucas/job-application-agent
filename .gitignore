@@ -47,3 +47,4 @@ site/tsconfig.tsbuildinfo
 site/out/
 site/outputs/
 site/work/
+artifacts/
