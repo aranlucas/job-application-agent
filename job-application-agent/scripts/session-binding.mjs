@@ -269,20 +269,28 @@ export async function readSessionBindingFile(filePath) {
 /**
  * Extract optional local-only binding fields from an attention add payload.
  * These must never be appended to the cloud attention event.
+ *
+ * Only activate when browserProfilePath is present. Passing display / vncPort /
+ * tabHint alone previously tripped attention add with browserProfilePath_required
+ * (batch command → invalid_input), which blocked otherwise-valid pauses.
+ *
  * @param {Record<string, unknown>} value
  */
 export function extractSessionBindingFields(value) {
+  if (!value || typeof value !== "object") return null;
+  const profile = value.browserProfilePath;
+  if (profile == null || (typeof profile === "string" && !profile.trim())) {
+    return null;
+  }
   const keys = ["browserProfilePath", "display", "vncPort", "tabHint"];
   /** @type {Record<string, unknown>} */
   const out = {};
-  let present = false;
   for (const key of keys) {
     if (Object.prototype.hasOwnProperty.call(value, key) && value[key] != null) {
       out[key] = value[key];
-      present = true;
     }
   }
-  return present ? out : null;
+  return out;
 }
 
 export const SESSION_BINDING_ATTENTION_KEYS = Object.freeze([

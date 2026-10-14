@@ -127,14 +127,14 @@ test('no telemetry event payload may contain name, email, phone, or résumé tex
       installationId: '11111111-1111-4111-8111-111111111111',
       token: 'relay-token',
       event: validated,
-      skillVersion: '3.7.4',
+      skillVersion: '3.7.5',
       identity: { name: 'Test Candidate', email: 'candidate@example.com' },
     }), /identity/i);
     const envelope = createTelemetryEnvelope({
       installationId: '11111111-1111-4111-8111-111111111111',
       token: 'relay-token',
       event: validated,
-      skillVersion: '3.7.4',
+      skillVersion: '3.7.5',
     });
     const serialized = JSON.stringify({ validated, envelope });
     for (const pattern of PII_PATTERNS) assert.equal(pattern.test(serialized), false, `${sample.event} leaked ${pattern}`);

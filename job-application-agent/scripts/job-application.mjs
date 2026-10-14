@@ -226,9 +226,80 @@ export async function telemetryJobAssessed(job, result) {
   };
 }
 
+const RESUME_ANSWER_KEY = /resume|attachment|cv|curriculum/i;
+export const THIN_SUBMISSION_OVERRIDE = 'THIN SUBMISSION ACKNOWLEDGED';
+
+const ATTENTION_BLOCKER_ALIASES = Object.freeze({
+  login: 'authentication',
+  'log-in': 'authentication',
+  'sign-in': 'authentication',
+  signin: 'authentication',
+  sso: 'authentication',
+});
+
+const ATTENTION_ACTION_ALIASES = Object.freeze({
+  login: 'sign-in',
+  'log-in': 'sign-in',
+  'complete-login': 'sign-in',
+  'upload-resume': 'enable-upload',
+  'resume-upload': 'enable-upload',
+});
+
+/**
+ * Resolve fill metrics for application_submitted without putting answer values in telemetry.
+ * Prefer explicit entry.telemetry counts; fall back to answer *keys* only (labels, not content).
+ */
+export function resolveSubmissionFillMetrics(entry, details = {}) {
+  const answers = Object.keys(entry?.answers ?? {});
+  const hasExplicitFields = details.fieldsFilled != null;
+  const hasExplicitResume = details.resumeUploaded != null;
+  const hasExplicitShort = details.shortAnswerCount != null;
+  const resumeFromAnswers = answers.some((key) => RESUME_ANSWER_KEY.test(key));
+  const fieldsFilled = hasExplicitFields ? details.fieldsFilled : answers.length;
+  const resumeUploaded = hasExplicitResume ? details.resumeUploaded : resumeFromAnswers;
+  const shortAnswerCount = hasExplicitShort
+    ? details.shortAnswerCount
+    : hasExplicitFields
+      ? Math.max(0, fieldsFilled - (resumeUploaded ? 1 : 0))
+      : answers.filter((key) => !RESUME_ANSWER_KEY.test(key)).length;
+  const metricsSource = (hasExplicitFields || hasExplicitResume)
+    ? 'telemetry'
+    : (answers.length > 0 ? 'answers' : 'empty');
+  return {
+    ...(details.durationBucket ? { durationBucket: details.durationBucket } : {}),
+    fieldsFilled,
+    shortAnswerCount,
+    resumeUploaded: Boolean(resumeUploaded),
+    metricsSource,
+  };
+}
+
+/**
+ * Block ledger add when fill metrics are missing or the submission looks empty.
+ * Fixture / vendor-sandbox applies are exempt. Intentional empty ATS accepts need
+ * thinSubmissionOverride: "THIN SUBMISSION ACKNOWLEDGED".
+ */
+export function assertSubmissionFillGuard(entry, metrics, thinOverride = null) {
+  if (isFixtureOrSandboxApply(entry)) return;
+  if (metrics.metricsSource === 'empty') {
+    throw new Error(
+      'entry.telemetry.fieldsFilled and entry.telemetry.resumeUploaded are required when answers are empty. '
+      + 'Pass integer field counts and a Boolean resumeUploaded only — never field values, paths, or answer text in telemetry.',
+    );
+  }
+  if (metrics.fieldsFilled === 0 && metrics.resumeUploaded !== true) {
+    if (thinOverride !== THIN_SUBMISSION_OVERRIDE) {
+      throw new Error(
+        `Submission looks empty (0 fields filled, no résumé). Fill the form and upload the canonical résumé before ledger add, `
+        + `or pass thinSubmissionOverride: "${THIN_SUBMISSION_OVERRIDE}" only when the ATS truly accepted an empty apply.`,
+      );
+    }
+  }
+}
+
 async function telemetryApplicationSubmitted(entry, details = {}) {
   const identity = await jobIdentity(entry.url);
-  const answers = Object.keys(entry.answers ?? {});
+  const metrics = resolveSubmissionFillMetrics(entry, details);
   return {
     event: 'application_submitted',
     properties: {
@@ -236,10 +307,10 @@ async function telemetryApplicationSubmitted(entry, details = {}) {
       company: entry.company,
       title: entry.role,
       ats: sourceToAts(entry.applicationChannel ?? entry.source),
-      durationBucket: details.durationBucket ?? durationBucket(0),
-      fieldsFilled: details.fieldsFilled ?? answers.length,
-      shortAnswerCount: details.shortAnswerCount ?? answers.filter((key) => !/resume|attachment/i.test(key)).length,
-      resumeUploaded: details.resumeUploaded ?? answers.some((key) => /resume|attachment/i.test(key)),
+      durationBucket: metrics.durationBucket ?? details.durationBucket ?? durationBucket(0),
+      fieldsFilled: metrics.fieldsFilled,
+      shortAnswerCount: metrics.shortAnswerCount,
+      resumeUploaded: metrics.resumeUploaded,
       approvalMode: entry.approval === 'STANDING AUTHORIZATION' ? 'routine-auto' : 'review-each',
     },
   };
@@ -1571,10 +1642,46 @@ async function attentionNotifyHook(event, context = {}) {
   }
 }
 
+function normalizeAttentionBlocker(value) {
+  const raw = string(value, 'attention.blocker', 60).toLowerCase();
+  return ATTENTION_BLOCKER_ALIASES[raw] ?? raw;
+}
+
+function normalizeAttentionActions(value) {
+  const actions = stringArray(value, 'attention.requiredActions', true).map((item) => {
+    const raw = item.toLowerCase();
+    return ATTENTION_ACTION_ALIASES[raw] ?? raw;
+  });
+  return [...new Set(actions)];
+}
+
+function sessionBindingAttentionError(error) {
+  const code = String(error?.message ?? error ?? '');
+  if (/browserProfilePath/i.test(code)) {
+    return new Error('attention.browserProfilePath is required when writing a session binding.');
+  }
+  if (/display/i.test(code)) {
+    return new Error('attention.display must be :99 (fill session); never TigerVNC :1.');
+  }
+  if (/vncPort/i.test(code)) {
+    return new Error('attention.vncPort must be 5900 (fill x11vnc); never 5901.');
+  }
+  if (/jobUrl|tabHint/i.test(code)) {
+    return new Error(`attention session binding is invalid: ${code}.`);
+  }
+  return new Error(`attention session binding is invalid: ${code}.`);
+}
+
 async function attentionAdd(input) {
   const value = object(input, 'attention item');
+  if (Object.hasOwn(value, 'answers')) {
+    throw new Error(
+      'Unknown attention property: answers. Candidate responses must not be stored on attention add; '
+      + 'use the hosted resume signal answers[] / answer bank path instead.',
+    );
+  }
   const allowed = new Set([
-    'roundId', 'applicationId', 'url', 'stage', 'blocker', 'requiredActions', 'createdAt', 'company', 'role',
+    'roundId', 'applicationId', 'url', 'stage', 'blocker', 'requiredActions', 'createdAt', 'company', 'role', 'title',
     // P1.5 judgment packaging (prompts only — never candidate responses).
     'questions', 'postingText', 'aiAssistanceDiscouraged',
     // Local-only session binding hooks — never appended to the cloud attention event.
@@ -1582,14 +1689,15 @@ async function attentionAdd(input) {
   ]);
   for (const key of Object.keys(value)) if (!allowed.has(key)) throw new Error(`Unknown attention property: ${key}.`);
   const stage = string(value.stage, 'attention.stage', 40).toLowerCase();
-  const blocker = string(value.blocker, 'attention.blocker', 60).toLowerCase();
+  const blocker = normalizeAttentionBlocker(value.blocker);
   if (!ATTENTION_STAGES.has(stage)) throw new Error('attention.stage is invalid.');
   if (!ATTENTION_BLOCKERS.has(blocker)) throw new Error('attention.blocker is invalid.');
-  const requiredActions = stringArray(value.requiredActions, 'attention.requiredActions', true).map((item) => item.toLowerCase());
+  const requiredActions = normalizeAttentionActions(value.requiredActions);
   if (requiredActions.length > 8 || requiredActions.some((item) => !REQUIRED_ACTIONS.has(item))) throw new Error('attention.requiredActions must contain only documented actions.');
   const applicationId = string(value.applicationId, 'attention.applicationId', 180);
   let company = typeof value.company === 'string' ? value.company.trim() : '';
   let role = typeof value.role === 'string' ? value.role.trim() : '';
+  if (!role && typeof value.title === 'string') role = value.title.trim();
   if (!company || !role) {
     try {
       const apps = await jsonLines(join(await ensureStateDir(), 'applications.ndjson'));
@@ -1626,16 +1734,21 @@ async function attentionAdd(input) {
 
   let sessionBinding = null;
   if (localBindingFields) {
-    const binding = createSessionBinding({
-      attentionId: event.id,
-      jobUrl: event.url,
-      applicationId: event.applicationId,
-      roundId: event.roundId,
-      createdAt: event.createdAt,
-      questions: event.questions,
-      aiAssistanceDiscouraged: event.aiAssistanceDiscouraged,
-      ...localBindingFields,
-    });
+    let binding;
+    try {
+      binding = createSessionBinding({
+        attentionId: event.id,
+        jobUrl: event.url,
+        applicationId: event.applicationId,
+        roundId: event.roundId,
+        createdAt: event.createdAt,
+        questions: event.questions,
+        aiAssistanceDiscouraged: event.aiAssistanceDiscouraged,
+        ...localBindingFields,
+      });
+    } catch (error) {
+      throw sessionBindingAttentionError(error);
+    }
     const path = sessionBindingPath(await ensureStateDir(), event.id);
     sessionBinding = { path, binding: await writeSessionBindingFile(path, binding) };
   }
@@ -2038,10 +2151,12 @@ async function executeCommand([area, action, value], telemetry, session, communi
     const input = await jsonStdin();
     const telemetryDetails = validateSubmissionTelemetry(input.telemetry);
     const entry = validateLedgerEntry(input);
+    const fillMetrics = resolveSubmissionFillMetrics(entry, telemetryDetails);
+    assertSubmissionFillGuard(entry, fillMetrics, input.thinSubmissionOverride);
     result = await ledgerAdd(entry, input.duplicateOverride, input.companyReapplyOverride, input.cloudIntentId && input.cloudLeaseId ? { intentId: input.cloudIntentId, leaseId: input.cloudLeaseId } : null);
     result.communityJob = await communityJobsSync(community, { limit: 1, applicationIds: [entry.id] });
     if (!isFixtureOrSandboxApply(entry)) {
-      await emitDomainEvent(telemetry, session, await telemetryApplicationSubmitted(entry, telemetryDetails));
+      await emitDomainEvent(telemetry, session, await telemetryApplicationSubmitted(entry, fillMetrics));
     }
   } else if (area === 'ledger' && action === 'outcome' && value === '--stdin') {
     const outcome = await ledgerOutcome(await jsonStdin());

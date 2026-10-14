@@ -68,7 +68,12 @@ try {
   const coverage = run(['round', 'status', round.roundId]).discovery;
   assert.equal(coverage.coverageSatisfied, true);
   assert.equal(coverage.searchedSourceCount, 3);
-  const app = { id: 'smoke-app', company: 'Package Fixture', role: 'Senior Engineer', url: 'https://package.fixture.example/jobs/1', source: 'email', discoverySourceId: 'indeed', roundId: round.roundId, score: 90, status: 'submitted', submittedAt: '2026-01-01T00:00:00Z', approval: 'STANDING AUTHORIZATION' };
+  const app = {
+    id: 'smoke-app', company: 'Package Fixture', role: 'Senior Engineer', url: 'https://package.fixture.example/jobs/1',
+    source: 'email', discoverySourceId: 'indeed', roundId: round.roundId, score: 90, status: 'submitted',
+    submittedAt: '2026-01-01T00:00:00Z', approval: 'STANDING AUTHORIZATION', answers: {},
+    telemetry: { durationBucket: '2-5m', fieldsFilled: 6, resumeUploaded: true },
+  };
   run(['round','lead','--stdin'], { id: 'smoke-lead', roundId: round.roundId, sourceId: 'indeed', url: app.url, company: app.company, role: app.role, applicationId: app.id, disposition: 'qualified', observedAt: app.submittedAt, evidence: 'Synthetic package lead meets the target.' });
   assert.equal(run(['round','leads',round.roundId]).qualifiedCount, 1);
   run(['ledger','add','--stdin'], app);

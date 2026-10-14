@@ -15,7 +15,11 @@ async function fixture(t) {
   const fail = (args, input) => spawnSync(process.execPath, [script, ...args], { env, encoding: 'utf8', input: JSON.stringify(input) });
   return { dir, run, fail };
 }
-const application = (roundId) => ({ id: 'app', company: 'Example', role: 'Senior Engineer', url: 'https://example.test/jobs/1', source: 'email', discoverySourceId: 'indeed', score: 90, status: 'submitted', submittedAt: '2026-01-01T00:00:00Z', approval: 'STANDING AUTHORIZATION', roundId });
+const application = (roundId) => ({
+  id: 'app', company: 'Example', role: 'Senior Engineer', url: 'https://example.test/jobs/1', source: 'email', discoverySourceId: 'indeed',
+  score: 90, status: 'submitted', submittedAt: '2026-01-01T00:00:00Z', approval: 'STANDING AUTHORIZATION', roundId, answers: {},
+  telemetry: { durationBucket: '2-5m', fieldsFilled: 6, resumeUploaded: true },
+});
 const failure = { id: 'bounce-1', applicationId: 'app', attemptId: 'initial:app', type: 'delivery-failed', evidenceType: 'final-delivery-failure', evidence: 'Matched final failure for the original recruiting message.', occurredAt: '2026-01-02T00:00:00Z' };
 
 test('late delivery failure corrects completed round and review without rewriting applications', async (t) => {
