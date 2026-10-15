@@ -5,6 +5,12 @@ const MAX_UPSTREAM_BYTES = 256 * 1024;
 const BOARD_CACHE_SECONDS = 5 * 60;
 const BOARD_CACHE_ORIGIN = 'https://jobappagent.com';
 
+/** @returns {Cache | undefined} */
+function workersDefaultCache() {
+  if (typeof caches === 'undefined') return undefined;
+  return /** @type {{ default?: Cache }} */ (caches).default;
+}
+
 function telemetryFetch() {
   const binding = /** @type {{ TELEMETRY?: { fetch: typeof fetch } }} */ (env).TELEMETRY;
   return binding?.fetch?.bind(binding) ?? fetch;
@@ -50,10 +56,10 @@ export async function loadLiveJobs(options = {}) {
   const base = liveUpstreamBase();
   if (!base) return [];
   const status = options.status === undefined ? 'open' : options.status;
-  const useCache = !options.fetcher && !options.skipCache && typeof caches !== 'undefined' && caches.default;
-  const cacheKey = useCache ? boardCacheKey(status) : null;
-  if (cacheKey) {
-    const cached = await caches.default.match(cacheKey);
+  const cache = !options.fetcher && !options.skipCache ? workersDefaultCache() : undefined;
+  const cacheKey = cache ? boardCacheKey(status) : null;
+  if (cache && cacheKey) {
+    const cached = await cache.match(cacheKey);
     if (cached) {
       const validated = validateLiveJobs(JSON.parse(await cached.text()));
       if (validated.ok) return validated.data.jobs;
@@ -84,14 +90,14 @@ export async function loadLiveJobs(options = {}) {
     cursor = validated.data.nextCursor;
     if (!cursor) {
       const list = [...jobs.values()];
-      if (cacheKey) {
+      if (cache && cacheKey) {
         const payload = {
           version: 1,
           jobs: list,
           nextCursor: null,
           meta: { newestLastCheckedAt },
         };
-        await caches.default.put(cacheKey, new Response(JSON.stringify(payload), {
+        await cache.put(cacheKey, new Response(JSON.stringify(payload), {
           headers: {
             'content-type': 'application/json; charset=utf-8',
             'cache-control': `public, max-age=60, s-maxage=${BOARD_CACHE_SECONDS}, stale-while-revalidate=900`,
