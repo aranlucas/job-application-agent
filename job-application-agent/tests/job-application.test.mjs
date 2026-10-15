@@ -315,13 +315,55 @@ test('validates structured submission metrics without adding them to the ledger 
     fieldsFilled: 3, resumeUploaded: false, durationBucket: '1-2m',
   });
   assert.equal(validateSubmissionTelemetry({ startedAt: '2026-10-13T10:00:00.000Z', endedAt: '2026-10-13T10:08:00.000Z' }).durationBucket, '5-15m');
-  assert.throws(() => validateSubmissionTelemetry({ ...metrics, note: 'private text' }), /unknown/i);
   assert.throws(() => validateSubmissionTelemetry({ ...metrics, fieldsFilled: 1.5 }), /integer/i);
+});
+
+test('strips unknown telemetry keys with a warning, keeps valid ones, and hard-rejects PII', () => {
+  const writes = [];
+  const originalWrite = process.stderr.write;
+  process.stderr.write = (chunk, ...rest) => {
+    writes.push(String(chunk));
+    return originalWrite.call(process.stderr, chunk, ...rest);
+  };
+  try {
+    assert.deepEqual(validateSubmissionTelemetry({
+      fieldsFilled: 9,
+      resumeUploaded: true,
+      durationBucket: '2-5m',
+      otpVerified: true,
+      otpVerifiedAt: '2026-10-15T04:00:00.000Z',
+      mysteryAgentFlag: true,
+    }), {
+      fieldsFilled: 9,
+      resumeUploaded: true,
+      durationBucket: '2-5m',
+      otpVerified: true,
+    });
+    assert.match(writes.join(''), /dropped unknown entry\.telemetry properties: otpVerifiedAt, mysteryAgentFlag/);
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+  assert.throws(
+    () => validateSubmissionTelemetry({ fieldsFilled: 3, resumeUploaded: true, candidateName: 'Ada' }),
+    /PII property: candidateName/,
+  );
+  assert.throws(
+    () => validateSubmissionTelemetry({ fieldsFilled: 3, resumeUploaded: true, email: 'ada@example.com' }),
+    /PII property: email/,
+  );
+  assert.throws(
+    () => validateSubmissionTelemetry({ fieldsFilled: 3, resumeUploaded: true, identity: { name: 'Ada' } }),
+    /PII property: identity/,
+  );
+  assert.throws(
+    () => validateSubmissionTelemetry({ fieldsFilled: 3, resumeUploaded: true, otpVerified: 'yes' }),
+    /otpVerified must be a Boolean/,
+  );
 });
 
 test('resolves fill metrics from telemetry counts or answer keys without storing values', () => {
   assert.deepEqual(resolveSubmissionFillMetrics({ answers: {} }, {}), {
-    fieldsFilled: 0, shortAnswerCount: 0, resumeUploaded: false, metricsSource: 'empty',
+    fieldsFilled: 0, shortAnswerCount: 0, resumeUploaded: false, fillMetricsSource: 'empty',
   });
   assert.equal(resolveSubmissionFillMetrics({
     answers: { 'Full name': 'redacted', Resume: 'uploaded' },
@@ -329,8 +371,11 @@ test('resolves fill metrics from telemetry counts or answer keys without storing
   assert.equal(resolveSubmissionFillMetrics({
     answers: { 'Full name': 'redacted', Resume: 'uploaded' },
   }, {}).resumeUploaded, true);
+  assert.equal(resolveSubmissionFillMetrics({
+    answers: { 'Full name': 'redacted', Resume: 'uploaded' },
+  }, {}).fillMetricsSource, 'answer_keys');
   assert.deepEqual(resolveSubmissionFillMetrics({ answers: {} }, { fieldsFilled: 12, resumeUploaded: true }), {
-    fieldsFilled: 12, shortAnswerCount: 11, resumeUploaded: true, metricsSource: 'telemetry',
+    fieldsFilled: 12, shortAnswerCount: 11, resumeUploaded: true, fillMetricsSource: 'telemetry',
   });
 });
 
@@ -422,7 +467,12 @@ test('deduplicates ledger entries by normalized URL', async (t) => {
     input: JSON.stringify({ id: 'different-again', company: 'Example Holdings', role: 'Staff Engineer', url: 'https://jobs.example.com/123?candidateTracking=opaque-value' }), env, encoding: 'utf8',
   }));
   assert.equal(relabelled.duplicate, true);
-  assert.equal((await readFile(join(directory, 'applications.ndjson'), 'utf8')).includes('telemetry'), false);
+  const stored = JSON.parse((await readFile(join(directory, 'applications.ndjson'), 'utf8')).trim());
+  assert.equal(stored.fillMetricsSource, 'telemetry');
+  assert.equal(stored.telemetrySupplied, true);
+  assert.equal('durationBucket' in stored, false);
+  assert.equal('fieldsFilled' in stored, false);
+  assert.equal('shortAnswerCount' in stored, false);
   if (process.platform !== 'win32') assert.equal((await stat(join(directory, 'applications.ndjson'))).mode & 0o777, 0o600);
 });
 
@@ -771,8 +821,9 @@ test('application_submitted uses null/unknown when telemetry is omitted', async 
     company: 'Example', role: 'Engineer', url: 'https://jobs.example.com/null-telemetry',
     source: 'lever', approval: 'STANDING AUTHORIZATION', answers: {},
   };
-  const missing = await telemetryApplicationSubmitted(entry, { telemetrySupplied: false });
+  const missing = await telemetryApplicationSubmitted(entry, { telemetrySupplied: false, fillMetricsSource: 'empty' });
   assert.equal(missing.properties.telemetrySupplied, false);
+  assert.equal(missing.properties.fillMetricsSource, 'empty');
   assert.equal(missing.properties.fieldsFilled, null);
   assert.equal(missing.properties.shortAnswerCount, null);
   assert.equal(missing.properties.resumeUploaded, null);
@@ -780,6 +831,7 @@ test('application_submitted uses null/unknown when telemetry is omitted', async 
 
   const fromLifecycle = await telemetryApplicationSubmitted(entry, {
     telemetrySupplied: false,
+    fillMetricsSource: 'empty',
     lifecycleStartedAt: new Date(Date.now() - 90_000).toISOString(),
   });
   assert.equal(fromLifecycle.properties.durationBucket, '1-2m');
@@ -787,14 +839,59 @@ test('application_submitted uses null/unknown when telemetry is omitted', async 
 
   const supplied = await telemetryApplicationSubmitted(entry, {
     telemetrySupplied: true,
+    fillMetricsSource: 'telemetry',
     fieldsFilled: 9,
     resumeUploaded: true,
     shortAnswerCount: 2,
     durationBucket: '5-15m',
   });
   assert.equal(supplied.properties.telemetrySupplied, true);
+  assert.equal(supplied.properties.fillMetricsSource, 'telemetry');
   assert.equal(supplied.properties.fieldsFilled, 9);
   assert.equal(supplied.properties.durationBucket, '5-15m');
+});
+
+test('marks answer-key fill metrics fallback on ledger and application_submitted', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'public-job-agent-answer-key-fallback-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const script = fileURLToPath(new URL('../scripts/job-application.mjs', import.meta.url));
+  await writeFile(join(directory, 'telemetry.json'), JSON.stringify({ version: 1, enabled: false, disclosed: true, graceConsumed: true, installationEventPending: false }));
+  const env = isolatedCliEnv(directory);
+  const answers = {
+    'Full name': 'filled', Email: 'filled', Phone: 'filled', Location: 'filled',
+    LinkedIn: 'filled', 'Work authorization': 'filled', Resume: 'uploaded',
+  };
+  const result = await runCli(script, ['ledger', 'add', '--stdin'], {
+    id: 'answer-key-fallback-role',
+    company: 'Fallback Co',
+    role: 'Engineer',
+    url: 'https://jobs.example.com/answer-key-fallback',
+    source: 'lever',
+    score: 80,
+    status: 'submitted',
+    submittedAt: '2026-10-15T04:00:00Z',
+    approval: 'STANDING AUTHORIZATION',
+    answers,
+  }, env);
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stderr, /fillMetricsSource=answer_keys/);
+  assert.match(result.stderr, /telemetrySupplied=false/);
+  assert.match(result.stderr, /Resend entry\.telemetry/);
+  const stored = JSON.parse((await readFile(join(directory, 'applications.ndjson'), 'utf8')).trim());
+  assert.equal(stored.fillMetricsSource, 'answer_keys');
+  assert.equal(stored.telemetrySupplied, false);
+  assert.equal('durationBucket' in stored, false);
+  assert.equal('fieldsFilled' in stored, false);
+
+  const event = await telemetryApplicationSubmitted(stored, {
+    ...resolveSubmissionFillMetrics(stored, {}),
+    telemetrySupplied: false,
+  });
+  assert.equal(event.properties.fillMetricsSource, 'answer_keys');
+  assert.equal(event.properties.telemetrySupplied, false);
+  assert.equal(event.properties.fieldsFilled, 7);
+  assert.equal(event.properties.resumeUploaded, true);
+  assert.equal(event.properties.durationBucket, 'unknown');
 });
 
 test('builds a structured assessment event without description or candidate profile data', async () => {

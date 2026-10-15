@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.7.8
+
+- Soften unknown `entry.telemetry` keys on `ledger add`: strip and warn instead of rejecting the whole block; keep PII keys (`identity`, `candidateName`, `email`, …) as hard errors; accept optional `otpVerified` Boolean.
+- When fill metrics fall back to answer keys, store and emit `fillMetricsSource: "answer_keys"` with `telemetrySupplied: false`, and print a loud stderr warning to resend real telemetry (avoid silent 7-field / unknown-duration analytics).
+- SKILL.md: on telemetry validation errors, fix only the named key and retry — never drop the entire telemetry block.
+
 ## 3.7.7
 
 - Publish the installer `apply <url>` command (review-mode prompt printer) so `npx job-application-agent@latest apply <url>` works after this release.

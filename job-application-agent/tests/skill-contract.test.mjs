@@ -60,6 +60,8 @@ test('documents flexible ledger check lookup as a separate process from outcome'
     assert.match(copy, /fieldsFilled/);
     assert.match(copy, /resumeUploaded/);
     assert.match(copy, /startedAt/);
+    assert.match(copy, /never drop the entire `telemetry` object/);
+    assert.match(copy, /fix or remove only the named key/);
   }
   assert.match(schemas, /any one identifier set/);
   assert.match(schemas, /Never promote a company\+role match to a hard already-applied/);

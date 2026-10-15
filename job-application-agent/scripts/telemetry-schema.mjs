@@ -95,6 +95,9 @@ export const EVENT_SCHEMAS = {
       approvalMode: enumValue(APPROVAL_MODES),
       telemetrySupplied: boolean,
     },
+    optional: {
+      fillMetricsSource: enumValue(values('telemetry', 'answer_keys', 'empty')),
+    },
   },
   round_completed: { required: { requestedCount: integer(1, 1000), submittedCount: integer(0, 1000), assessedCount: integer(0, 10000), skippedCount: integer(0, 10000), pausedCount: integer(0, 10000), errorCount: integer(0, 10000), durationBucket: enumValue(DURATIONS) }, optional: { attemptedSourceCount: integer(0, 10000), searchedSourceCount: integer(0, 10000), blockedSourceCount: integer(0, 10000), maxSourceSharePercent: integer(0, 100), concentrationReason: enumValue(CONCENTRATION_REASONS) } },
   outcome_recorded: {
