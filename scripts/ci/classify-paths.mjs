@@ -50,6 +50,7 @@ export function classifyChangedPaths(paths) {
     codeChanged: normalized.some(changedPath => CODE_PATH.test(changedPath)),
     dependencyChanged: normalized.some(changedPath => DEPENDENCY_PATHS.has(changedPath)),
     highRisk: normalized.some(changedPath => HIGH_RISK_PATHS.some(pattern => pattern.test(changedPath))),
+    siteChanged: normalized.some(changedPath => changedPath === 'site' || changedPath.startsWith('site/')),
   };
 }
 
@@ -60,6 +61,7 @@ function main() {
     `code_changed=${classification.codeChanged}`,
     `dependency_changed=${classification.dependencyChanged}`,
     `high_risk=${classification.highRisk}`,
+    `site_changed=${classification.siteChanged}`,
   ];
   if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `${outputs.join('\n')}\n`);
   process.stdout.write(`${JSON.stringify({ paths, ...classification })}\n`);

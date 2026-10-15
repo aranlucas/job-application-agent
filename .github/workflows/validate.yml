@@ -17,6 +17,7 @@ jobs:
       code_changed: ${{ steps.changes.outputs.code_changed }}
       dependency_changed: ${{ steps.changes.outputs.dependency_changed }}
       high_risk: ${{ steps.changes.outputs.high_risk }}
+      site_changed: ${{ steps.changes.outputs.site_changed }}
     steps:
       - name: Check out repository
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -124,6 +125,27 @@ jobs:
         with:
           fail-on-severity: high
 
+  site:
+    name: site
+    if: needs.classify.outputs.site_changed == 'true'
+    needs: classify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+      - name: Install site dependencies
+        run: npm --prefix site ci
+      - name: Run site lint and typecheck
+        # Same gate as deploy-site.yml — catch CacheStorage/DOM typing gaps before merge.
+        run: npm --prefix site run lint && npm --prefix site run typecheck
+
   high-risk:
     name: high-risk (${{ matrix.os }}, Node ${{ matrix.node }})
     if: needs.classify.outputs.high_risk == 'true'
@@ -184,13 +206,14 @@ jobs:
   quality-gate:
     name: quality-gate
     if: always()
-    needs: [classify, core, dependency-review, high-risk, codeql]
+    needs: [classify, core, dependency-review, site, high-risk, codeql]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
       CLASSIFY_RESULT: ${{ needs.classify.result }}
       CORE_RESULT: ${{ needs.core.result }}
       DEPENDENCY_RESULT: ${{ needs.dependency-review.result }}
+      SITE_RESULT: ${{ needs.site.result }}
       HIGH_RISK_RESULT: ${{ needs.high-risk.result }}
       CODEQL_RESULT: ${{ needs.codeql.result }}
     steps:
@@ -199,7 +222,7 @@ jobs:
         run: |
           test "$CLASSIFY_RESULT" = success
           test "$CORE_RESULT" = success
-          for result in "$DEPENDENCY_RESULT" "$HIGH_RISK_RESULT" "$CODEQL_RESULT"; do
+          for result in "$DEPENDENCY_RESULT" "$SITE_RESULT" "$HIGH_RISK_RESULT" "$CODEQL_RESULT"; do
             case "$result" in
               success|skipped) ;;
               *) echo "Required job finished with: $result" >&2; exit 1 ;;

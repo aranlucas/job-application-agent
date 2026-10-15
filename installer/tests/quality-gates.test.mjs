@@ -30,6 +30,7 @@ test('classifies documentation-only changes as low risk', () => {
     codeChanged: false,
     dependencyChanged: false,
     highRisk: false,
+    siteChanged: false,
   });
 });
 
@@ -57,11 +58,19 @@ test('tracks dependency and ordinary JavaScript changes independently', () => {
     codeChanged: false,
     dependencyChanged: true,
     highRisk: true,
+    siteChanged: false,
   });
   assert.deepEqual(classifyChangedPaths(['telemetry-worker/public/dashboard.js']), {
     codeChanged: true,
     dependencyChanged: false,
     highRisk: false,
+    siteChanged: false,
+  });
+  assert.deepEqual(classifyChangedPaths(['site/app/api/community-stats/route.ts']), {
+    codeChanged: true,
+    dependencyChanged: false,
+    highRisk: false,
+    siteChanged: true,
   });
 });
 
@@ -169,6 +178,14 @@ test('validation exposes a stable quality gate and a six-combination high-risk m
   assert.match(workflow, /node:\s*\[20, 24\]/);
   assert.match(workflow, /classify-paths\.mjs/);
   assert.match(workflow, /check:native-artifacts/);
+});
+
+test('validation runs site lint and typecheck when site paths change', async () => {
+  const workflow = await readFile(new URL('../../.github/workflows/validate.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /^\s{2}site:/m);
+  assert.match(workflow, /site_changed/);
+  assert.match(workflow, /npm --prefix site run lint && npm --prefix site run typecheck/);
+  assert.match(workflow, /needs:\s*\[classify, core, dependency-review, site, high-risk, codeql\]/);
 });
 
 test('validation commands are portable across Windows and pipefail shells', async () => {

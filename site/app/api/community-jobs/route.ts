@@ -1,11 +1,12 @@
 import { env } from "cloudflare:workers";
 import { communityJobsUpstreamUrl, validateCommunityJobs } from "../../../lib/community-jobs.mjs";
+import { workersDefaultCache } from "../../../lib/workers-cache";
 
 const CACHE_CONTROL = "public, max-age=60, s-maxage=300, stale-while-revalidate=900";
 const MAX_UPSTREAM_BYTES = 128 * 1024;
 
 export async function GET(request: Request) {
-  const cache = typeof caches !== "undefined" ? caches.default : undefined;
+  const cache = workersDefaultCache();
   const cacheKey = new Request(request.url, { method: "GET" });
   if (cache) {
     const cached = await cache.match(cacheKey);
