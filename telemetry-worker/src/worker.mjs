@@ -5,11 +5,17 @@ import {
   validateCommunityJobContributionEnvelope,
   validateSourceContributionEnvelope,
 } from '../../job-application-agent/scripts/source-community-schema.mjs';
-import { publicStatsResponse, recordPublicAggregate } from './public-stats.mjs';
+import {
+  publicStatsResponse,
+  recordPublicAggregate,
+  refreshActiveInstallations30d,
+} from './public-stats.mjs';
 import {
   DEFAULT_LIVENESS_BATCH_SIZE,
   runJobLivenessSweep,
 } from './job-liveness.mjs';
+
+const LIVE_JOBS_CACHE_SECONDS = 5 * 60;
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -343,8 +349,9 @@ function jobStore(env) {
         database.prepare(`
           INSERT INTO community_jobs (
             job_id, canonical_url, company, role, application_channel, discovery_source,
-            provider_url, first_seen_at, last_seen_at, first_skill_version, last_skill_version
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            provider_url, first_seen_at, last_seen_at, first_skill_version, last_skill_version,
+            contribution_count
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
           ON CONFLICT(job_id) DO UPDATE SET
             last_seen_at = excluded.last_seen_at,
             last_skill_version = excluded.last_skill_version
@@ -358,12 +365,18 @@ function jobStore(env) {
             last_seen_at = excluded.last_seen_at,
             skill_version = excluded.skill_version
         `).bind(job.jobId, contributorHash, job.firstSeenAt, job.lastSeenAt, job.skillVersion),
+        database.prepare(`
+          UPDATE community_jobs
+          SET contribution_count = (
+            SELECT COUNT(*) FROM community_job_contributions WHERE job_id = ?
+          )
+          WHERE job_id = ?
+        `).bind(job.jobId, job.jobId),
       ]);
       const state = await database.prepare(`
-        SELECT jobs.publication_status,
-               (SELECT COUNT(*) FROM community_job_contributions WHERE job_id = jobs.job_id) AS contribution_count
-        FROM community_jobs AS jobs
-        WHERE jobs.job_id = ?
+        SELECT publication_status, contribution_count
+        FROM community_jobs
+        WHERE job_id = ?
       `).bind(job.jobId).first();
       return { publicationStatus: state.publication_status, contributionCount: Number(state.contribution_count) };
     },
@@ -371,7 +384,7 @@ function jobStore(env) {
       const result = await database.prepare(`
         SELECT jobs.job_id, jobs.canonical_url, jobs.company, jobs.role, jobs.application_channel,
                jobs.discovery_source, jobs.provider_url, jobs.first_seen_at, jobs.last_seen_at,
-               (SELECT COUNT(*) FROM community_job_contributions WHERE job_id = jobs.job_id) AS contribution_count
+               jobs.contribution_count
         FROM community_jobs AS jobs
         WHERE jobs.publication_status = 'published'
           AND jobs.review_status = 'maintainer-reviewed'
@@ -386,13 +399,13 @@ function jobStore(env) {
       const result = await database.prepare(`
         SELECT jobs.job_id, jobs.canonical_url, jobs.company, jobs.role, jobs.application_channel,
                jobs.discovery_source, jobs.provider_url, jobs.first_seen_at, jobs.last_seen_at,
-               COALESCE(jobs.liveness_status, 'unknown') AS liveness_status,
+               jobs.liveness_status,
                jobs.last_checked_at, jobs.closed_at,
-               (SELECT COUNT(*) FROM community_job_contributions WHERE job_id = jobs.job_id) AS contribution_count
+               jobs.contribution_count
         FROM community_jobs AS jobs
         WHERE jobs.publication_status = 'published'
           AND jobs.review_status = 'maintainer-reviewed'
-          AND (? IS NULL OR COALESCE(jobs.liveness_status, 'unknown') = ?)
+          AND (? IS NULL OR jobs.liveness_status = ?)
           AND (? IS NULL OR jobs.last_seen_at < ? OR (jobs.last_seen_at = ? AND jobs.job_id < ?))
         ORDER BY jobs.last_seen_at DESC, jobs.job_id DESC
         LIMIT ?
@@ -408,18 +421,18 @@ function jobStore(env) {
       const jobs = (result.results ?? []).map((row) => mapLiveJob(row));
       return { jobs: jobs.slice(0, limit), hasMore: jobs.length > limit };
     },
-    /** Oldest-checked (nulls first) published jobs for a bounded liveness batch. */
+    /** Oldest-checked (nulls first via ASC) published jobs for a bounded liveness batch. */
     async listDueForLivenessCheck({ limit }) {
       const result = await database.prepare(`
         SELECT jobs.job_id, jobs.canonical_url, jobs.company, jobs.role, jobs.application_channel,
                jobs.discovery_source, jobs.provider_url, jobs.first_seen_at, jobs.last_seen_at,
-               COALESCE(jobs.liveness_status, 'unknown') AS liveness_status,
+               jobs.liveness_status,
                jobs.last_checked_at, jobs.closed_at,
-               (SELECT COUNT(*) FROM community_job_contributions WHERE job_id = jobs.job_id) AS contribution_count
+               jobs.contribution_count
         FROM community_jobs AS jobs
         WHERE jobs.publication_status = 'published'
           AND jobs.review_status = 'maintainer-reviewed'
-        ORDER BY jobs.last_checked_at IS NOT NULL, jobs.last_checked_at ASC, jobs.job_id ASC
+        ORDER BY jobs.last_checked_at ASC, jobs.job_id ASC
         LIMIT ?
       `).bind(limit + 1).all();
       const jobs = (result.results ?? []).map((row) => mapLiveJob(row));
@@ -427,21 +440,33 @@ function jobStore(env) {
     },
     async newestLastCheckedAt() {
       const row = await database.prepare(`
-        SELECT MAX(last_checked_at) AS newest
-        FROM community_jobs
-        WHERE publication_status = 'published'
-          AND review_status = 'maintainer-reviewed'
+        SELECT newest_last_checked_at AS newest
+        FROM public_liveness_meta
+        WHERE id = 1
       `).first();
       return row?.newest ?? null;
     },
     async updateLiveness(jobId, { status, checkedAt, closedAt }) {
-      await database.prepare(`
-        UPDATE community_jobs
-        SET liveness_status = ?,
-            last_checked_at = ?,
-            closed_at = ?
-        WHERE job_id = ?
-      `).bind(status, checkedAt, closedAt, jobId).run();
+      await database.batch([
+        database.prepare(`
+          UPDATE community_jobs
+          SET liveness_status = ?,
+              last_checked_at = ?,
+              closed_at = ?
+          WHERE job_id = ?
+        `).bind(status, checkedAt, closedAt, jobId),
+        database.prepare(`
+          INSERT INTO public_liveness_meta (id, newest_last_checked_at)
+          VALUES (1, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            newest_last_checked_at = CASE
+              WHEN public_liveness_meta.newest_last_checked_at IS NULL
+                OR excluded.newest_last_checked_at > public_liveness_meta.newest_last_checked_at
+              THEN excluded.newest_last_checked_at
+              ELSE public_liveness_meta.newest_last_checked_at
+            END
+        `).bind(checkedAt),
+      ]);
     },
     async updateLivenessBatch(patches) {
       if (!Array.isArray(patches) || patches.length === 0) return;
@@ -452,6 +477,23 @@ function jobStore(env) {
             closed_at = ?
         WHERE job_id = ?
       `).bind(patch.status, patch.checkedAt, patch.closedAt, patch.jobId));
+      let newest = null;
+      for (const patch of patches) {
+        if (patch.checkedAt && (!newest || patch.checkedAt > newest)) newest = patch.checkedAt;
+      }
+      if (newest) {
+        statements.push(database.prepare(`
+          INSERT INTO public_liveness_meta (id, newest_last_checked_at)
+          VALUES (1, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            newest_last_checked_at = CASE
+              WHEN public_liveness_meta.newest_last_checked_at IS NULL
+                OR excluded.newest_last_checked_at > public_liveness_meta.newest_last_checked_at
+              THEN excluded.newest_last_checked_at
+              ELSE public_liveness_meta.newest_last_checked_at
+            END
+        `).bind(newest));
+      }
       await database.batch(statements);
     },
   };
@@ -551,6 +593,14 @@ async function listLiveJobs(request, env) {
   if (!await allowed(env.SOURCE_READ_RATE_LIMITER, await publicReadKey(request, env.SIGNING_SECRET, 'jobs-live'))) return response({ error: 'rate_limited' }, 429);
   let query;
   try { query = await parseLiveJobListQuery(request); } catch { return response({ error: 'invalid_job_query' }, 400); }
+
+  const cache = globalThis.caches?.default;
+  const cacheKey = new Request(request.url, { method: 'GET' });
+  if (cache) {
+    const cached = await cache.match(cacheKey);
+    if (cached) return cached;
+  }
+
   const store = jobStore(env);
   const result = await store.listLive(query);
   const newestLastCheckedAt = store.newestLastCheckedAt
@@ -559,12 +609,19 @@ async function listLiveJobs(request, env) {
       if (!job.lastCheckedAt) return newest;
       return !newest || job.lastCheckedAt > newest ? job.lastCheckedAt : newest;
     }, null);
-  return response({
+  const body = {
     version: 1,
     jobs: result.jobs,
     nextCursor: result.hasMore ? encodeJobCursor(result.jobs.at(-1)) : null,
     meta: { newestLastCheckedAt },
-  }, 200, 'no-store');
+  };
+  const resultResponse = response(
+    body,
+    200,
+    `public, max-age=60, s-maxage=${LIVE_JOBS_CACHE_SECONDS}, stale-while-revalidate=900`,
+  );
+  if (cache) await cache.put(cacheKey, resultResponse.clone());
+  return resultResponse;
 }
 
 async function adminLivenessSweep(request, env) {
@@ -620,5 +677,8 @@ export default {
       fetchImpl: env.LIVENESS_FETCH ?? fetch,
       limit: DEFAULT_LIVENESS_BATCH_SIZE,
     });
+    if (env.PUBLIC_STATS_DB?.prepare) {
+      await refreshActiveInstallations30d(env.PUBLIC_STATS_DB);
+    }
   },
 };

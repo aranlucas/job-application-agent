@@ -4,7 +4,14 @@ import { validateCommunityStats } from "../../../lib/community-stats.mjs";
 const CACHE_CONTROL = "public, max-age=60, s-maxage=900, stale-while-revalidate=3600";
 const MAX_UPSTREAM_BYTES = 128 * 1024;
 
-export async function GET() {
+export async function GET(request: Request) {
+  const cache = typeof caches !== "undefined" ? caches.default : undefined;
+  const cacheKey = new Request(request.url, { method: "GET" });
+  if (cache) {
+    const cached = await cache.match(cacheKey);
+    if (cached) return cached;
+  }
+
   const upstream = env.COMMUNITY_STATS_UPSTREAM;
   if (!upstream) return Response.json({ error: "stats_unavailable" }, { status: 503, headers: { "cache-control": "no-store" } });
   try {
@@ -17,7 +24,9 @@ export async function GET() {
     if (new TextEncoder().encode(raw).byteLength > MAX_UPSTREAM_BYTES) throw new Error("upstream response too large");
     const result = validateCommunityStats(JSON.parse(raw));
     if (!result.ok) throw new Error("invalid upstream response");
-    return Response.json(result.data, { headers: { "cache-control": CACHE_CONTROL, "x-content-type-options": "nosniff" } });
+    const next = Response.json(result.data, { headers: { "cache-control": CACHE_CONTROL, "x-content-type-options": "nosniff" } });
+    if (cache) await cache.put(cacheKey, next.clone());
+    return next;
   } catch {
     return Response.json({ error: "stats_unavailable" }, { status: 503, headers: { "cache-control": "no-store", "retry-after": "60" } });
   }

@@ -1,5 +1,14 @@
 const CACHE_SECONDS = 15 * 60;
+const ACTIVE_REFRESH_SECONDS = 15 * 60;
 const MIN_SEGMENT_COUNT = 3;
+
+const LIFETIME_COLUMNS = new Set([
+  'installations',
+  'jobs_assessed',
+  'applications_submitted',
+  'interviews',
+  'offers',
+]);
 
 function responseHeaders() {
   return {
@@ -44,29 +53,82 @@ async function increment(db, day, metric, segment = '') {
   `).bind(day, metric, segment).run();
 }
 
+async function ensureLifetimeRow(db, nowIso) {
+  await db.prepare(`
+    INSERT OR IGNORE INTO public_stats_lifetime (
+      id, installations, jobs_assessed, applications_submitted, interviews, offers,
+      active_installations_30d, refreshed_at
+    ) VALUES (1, 0, 0, 0, 0, 0, 0, ?)
+  `).bind(nowIso).run();
+}
+
+async function bumpLifetime(db, column, nowIso) {
+  if (!LIFETIME_COLUMNS.has(column)) throw new Error(`Invalid lifetime column: ${column}`);
+  await ensureLifetimeRow(db, nowIso);
+  await db.prepare(`
+    UPDATE public_stats_lifetime
+    SET ${column} = ${column} + 1,
+        refreshed_at = ?
+    WHERE id = 1
+  `).bind(nowIso).run();
+}
+
+/** Refresh the rolling 30d active-installation counter (indexed COUNT, not per-request). */
+export async function refreshActiveInstallations30d(db, now = new Date()) {
+  if (!db?.prepare) return;
+  const nowIso = now.toISOString();
+  await ensureLifetimeRow(db, nowIso);
+  await db.prepare(`
+    UPDATE public_stats_lifetime
+    SET active_installations_30d = (
+      SELECT COUNT(*) FROM public_installations
+      WHERE last_active_at >= datetime('now', '-30 days')
+    ),
+    refreshed_at = ?
+    WHERE id = 1
+  `).bind(nowIso).run();
+}
+
 export async function recordPublicAggregate(db, event, signingSecret, now = new Date()) {
   if (!db?.prepare) return;
   const day = now.toISOString().slice(0, 10);
+  const nowIso = now.toISOString();
   const active = event.event === 'job_assessed' || event.event === 'application_submitted';
   if (event.event === 'installation_started' || active) {
     const installationHash = await anonymousInstallationHash(event.installationId, signingSecret);
-    await db.prepare(`
-      INSERT INTO public_installations (installation_hash, installed_at, last_active_at)
+    const inserted = await db.prepare(`
+      INSERT OR IGNORE INTO public_installations (installation_hash, installed_at, last_active_at)
       VALUES (?, ?, ?)
-      ON CONFLICT(installation_hash) DO UPDATE SET
-        last_active_at = COALESCE(excluded.last_active_at, public_installations.last_active_at)
-    `).bind(installationHash, now.toISOString(), active ? now.toISOString() : null).run();
+    `).bind(installationHash, nowIso, active ? nowIso : null).run();
+    if (number(inserted?.meta?.changes) > 0) await bumpLifetime(db, 'installations', nowIso);
+    if (active) {
+      await db.prepare(`
+        UPDATE public_installations
+        SET last_active_at = ?
+        WHERE installation_hash = ?
+      `).bind(nowIso, installationHash).run();
+    }
   }
-  if (event.event === 'job_assessed') await increment(db, day, 'jobs_assessed');
+  if (event.event === 'job_assessed') {
+    await increment(db, day, 'jobs_assessed');
+    await bumpLifetime(db, 'jobs_assessed', nowIso);
+  }
   if (event.event === 'application_submitted') {
     await increment(db, day, 'applications_submitted');
+    await bumpLifetime(db, 'applications_submitted', nowIso);
     await increment(db, day, 'ats', event.properties.ats);
   }
   if (event.event === 'job_discovered') await increment(db, day, 'seniority', event.properties.seniority);
   if (event.event === 'outcome_recorded') {
     await increment(db, day, 'outcome', event.properties.outcome);
-    if (event.properties.outcome === 'interview') await increment(db, day, 'interviews');
-    if (event.properties.outcome === 'offer') await increment(db, day, 'offers');
+    if (event.properties.outcome === 'interview') {
+      await increment(db, day, 'interviews');
+      await bumpLifetime(db, 'interviews', nowIso);
+    }
+    if (event.properties.outcome === 'offer') {
+      await increment(db, day, 'offers');
+      await bumpLifetime(db, 'offers', nowIso);
+    }
   }
 }
 
@@ -74,20 +136,36 @@ function rows(result) {
   return Array.isArray(result?.results) ? result.results : [];
 }
 
+async function readLifetimeTotals(db, now = new Date()) {
+  const selectLifetime = () => db.prepare(`
+    SELECT installations, active_installations_30d, jobs_assessed, applications_submitted,
+           interviews, offers, refreshed_at
+    FROM public_stats_lifetime
+    WHERE id = 1
+  `).first();
+  let lifetime = await selectLifetime();
+  const refreshedAt = Date.parse(String(lifetime?.refreshed_at ?? ''));
+  const stale = !lifetime
+    || !Number.isFinite(refreshedAt)
+    || (now.getTime() - refreshedAt) > ACTIVE_REFRESH_SECONDS * 1000;
+  if (stale) {
+    await refreshActiveInstallations30d(db, now);
+    lifetime = await selectLifetime();
+  }
+  return lifetime ?? {
+    installations: 0,
+    active_installations_30d: 0,
+    jobs_assessed: 0,
+    applications_submitted: 0,
+    interviews: 0,
+    offers: 0,
+  };
+}
+
 export async function buildPublicStats(db, now = new Date()) {
   if (!db?.prepare) throw new Error('Public aggregate store is not configured.');
-  const [summary, timeline, ats, seniority, outcomes] = await Promise.all([
-    db.prepare(`
-      SELECT
-        (SELECT COUNT(*) FROM public_installations) AS installations,
-        (SELECT COUNT(*) FROM public_installations WHERE last_active_at >= datetime('now', '-30 days')) AS active_installations_30d,
-        COALESCE(SUM(CASE WHEN metric = 'jobs_assessed' THEN count ELSE 0 END), 0) AS jobs_assessed,
-        COALESCE(SUM(CASE WHEN metric = 'applications_submitted' THEN count ELSE 0 END), 0) AS applications_submitted,
-        COALESCE(SUM(CASE WHEN metric = 'interviews' THEN count ELSE 0 END), 0) AS interviews,
-        COALESCE(SUM(CASE WHEN metric = 'offers' THEN count ELSE 0 END), 0) AS offers
-      FROM public_daily_metrics
-      WHERE day >= date('now', '-24 months')
-    `).all(),
+  const [lifetime, timeline, ats, seniority, outcomes] = await Promise.all([
+    readLifetimeTotals(db, now),
     db.prepare(`
       SELECT day,
         SUM(CASE WHEN metric = 'jobs_assessed' THEN count ELSE 0 END) AS assessed,
@@ -101,7 +179,7 @@ export async function buildPublicStats(db, now = new Date()) {
     db.prepare(`SELECT segment AS label, SUM(count) AS count FROM public_daily_metrics WHERE day >= date('now', '-90 days') AND metric = 'seniority' GROUP BY segment ORDER BY count DESC, label LIMIT 12`).all(),
     db.prepare(`SELECT segment AS label, SUM(count) AS count FROM public_daily_metrics WHERE day >= date('now', '-365 days') AND metric = 'outcome' GROUP BY segment ORDER BY count DESC, label`).all(),
   ]);
-  const totals = rows(summary)[0] ?? {};
+  const totals = lifetime ?? {};
   const segment = (result) => suppressSmallSegments(rows(result));
   return {
     generatedAt: now.toISOString(),

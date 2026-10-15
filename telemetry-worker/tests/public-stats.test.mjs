@@ -7,8 +7,16 @@ import worker from '../src/worker.mjs';
 function result(results = []) { return { results, success: true }; }
 
 function readDb() {
+  const lifetime = {
+    installations: 42,
+    active_installations_30d: 18,
+    jobs_assessed: 310,
+    applications_submitted: 96,
+    interviews: 12,
+    offers: 2,
+    refreshed_at: '2026-08-14T00:00:00.000Z',
+  };
   const queued = [
-    result([{ installations: 42, active_installations_30d: 18, jobs_assessed: 310, applications_submitted: 96, interviews: 12, offers: 2 }]),
     result([{ day: '2026-08-12', assessed: 14, submitted: 5 }, { day: '2026-08-13', assessed: 21, submitted: 8 }]),
     result([{ label: 'ashby', count: 30 }, { label: 'greenhouse', count: 20 }, { label: 'tiny-segment', count: 2 }]),
     result([{ label: 'senior', count: 50 }, { label: 'staff', count: 25 }, { label: 'principal', count: 1 }]),
@@ -18,7 +26,15 @@ function readDb() {
   return {
     prepare(query) {
       queries.push(query);
-      return { all: async () => queued.shift() };
+      return {
+        bind() { return this; },
+        async first() {
+          if (/public_stats_lifetime/i.test(query)) return { ...lifetime };
+          return null;
+        },
+        async all() { return queued.shift(); },
+        async run() { return { success: true, meta: { changes: 1 } }; },
+      };
     },
     queries,
   };
@@ -30,7 +46,14 @@ function writeDb() {
     prepare(query) {
       return {
         bind(...values) {
-          return { run: async () => { writes.push({ query, values }); return { success: true }; } };
+          return {
+            run: async () => {
+              writes.push({ query, values });
+              return { success: true, meta: { changes: 1 } };
+            },
+            first: async () => null,
+            all: async () => result(),
+          };
         },
       };
     },
@@ -54,7 +77,9 @@ test('public stats returns aggregate metrics and suppresses small segments', asy
   for (const query of db.queries) {
     assert.doesNotMatch(query, /SELECT\s+\*/i);
     assert.doesNotMatch(query, /installation_hash\s+AS/i);
+    assert.doesNotMatch(query, /COUNT\(\*\)\s+FROM\s+public_installations/i);
   }
+  assert.ok(db.queries.some((query) => /public_stats_lifetime/i.test(query)));
 });
 
 test('event aggregation stores only an HMAC installation hash and bounded dimensions', async () => {
@@ -67,7 +92,8 @@ test('event aggregation stores only an HMAC installation hash and bounded dimens
   const serialized = JSON.stringify(db.writes);
   assert.equal(serialized.includes('11111111-1111-4111-8111-111111111111'), false);
   assert.equal(serialized.includes('ashby'), true);
-  assert.equal(db.writes.length, 3);
+  assert.ok(db.writes.length >= 3);
+  assert.ok(db.writes.some((write) => /public_stats_lifetime/i.test(write.query)));
 });
 
 test('public endpoint exposes only aggregate output and cache policy', async () => {

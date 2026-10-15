@@ -2,6 +2,8 @@ import { env } from 'cloudflare:workers';
 import { validateLiveJobs } from './live-jobs.mjs';
 
 const MAX_UPSTREAM_BYTES = 256 * 1024;
+const BOARD_CACHE_SECONDS = 5 * 60;
+const BOARD_CACHE_ORIGIN = 'https://jobappagent.com';
 
 function telemetryFetch() {
   const binding = /** @type {{ TELEMETRY?: { fetch: typeof fetch } }} */ (env).TELEMETRY;
@@ -30,20 +32,39 @@ function liveUpstreamBase() {
   return null;
 }
 
+function boardCacheKey(status) {
+  const key = new URL('/__cache/live-jobs-board', BOARD_CACHE_ORIGIN);
+  key.searchParams.set('status', status == null ? 'all' : status);
+  return new Request(key.toString(), { method: 'GET' });
+}
+
 /**
  * Load live jobs for the public board.
  * Defaults to `status=open` so SSR only pages verified-open roles (fast).
+ * Caches the aggregated board payload in the Cache API (~5 min) to avoid
+ * paginating D1 on every SSR hit.
  *
- * @param {{ fetcher?: typeof fetch, signal?: AbortSignal, status?: 'open' | 'closed' | 'unknown' | null }} [options]
+ * @param {{ fetcher?: typeof fetch, signal?: AbortSignal, status?: 'open' | 'closed' | 'unknown' | null, skipCache?: boolean }} [options]
  */
 export async function loadLiveJobs(options = {}) {
   const base = liveUpstreamBase();
   if (!base) return [];
-  const fetcher = options.fetcher ?? telemetryFetch();
   const status = options.status === undefined ? 'open' : options.status;
+  const useCache = !options.fetcher && !options.skipCache && typeof caches !== 'undefined' && caches.default;
+  const cacheKey = useCache ? boardCacheKey(status) : null;
+  if (cacheKey) {
+    const cached = await caches.default.match(cacheKey);
+    if (cached) {
+      const validated = validateLiveJobs(JSON.parse(await cached.text()));
+      if (validated.ok) return validated.data.jobs;
+    }
+  }
+
+  const fetcher = options.fetcher ?? telemetryFetch();
   const jobs = new Map();
   const cursors = new Set();
   let cursor = null;
+  let newestLastCheckedAt = null;
   for (let page = 0; page < 200; page++) {
     const target = new URL(base);
     target.searchParams.set('limit', '100');
@@ -59,8 +80,26 @@ export async function loadLiveJobs(options = {}) {
     const validated = validateLiveJobs(JSON.parse(raw));
     if (!validated.ok) throw new Error('Invalid live jobs response');
     for (const job of validated.data.jobs) jobs.set(job.jobId, job);
+    if (validated.data.meta?.newestLastCheckedAt) newestLastCheckedAt = validated.data.meta.newestLastCheckedAt;
     cursor = validated.data.nextCursor;
-    if (!cursor) return [...jobs.values()];
+    if (!cursor) {
+      const list = [...jobs.values()];
+      if (cacheKey) {
+        const payload = {
+          version: 1,
+          jobs: list,
+          nextCursor: null,
+          meta: { newestLastCheckedAt },
+        };
+        await caches.default.put(cacheKey, new Response(JSON.stringify(payload), {
+          headers: {
+            'content-type': 'application/json; charset=utf-8',
+            'cache-control': `public, max-age=60, s-maxage=${BOARD_CACHE_SECONDS}, stale-while-revalidate=900`,
+          },
+        }));
+      }
+      return list;
+    }
     if (cursors.has(cursor)) throw new Error('Repeated live jobs cursor');
     cursors.add(cursor);
   }
@@ -69,7 +108,7 @@ export async function loadLiveJobs(options = {}) {
 
 /**
  * Safe loader for pages/sitemap — empty on failure so SEO pages still render.
- * @param {{ fetcher?: typeof fetch }} [options]
+ * @param {{ fetcher?: typeof fetch, skipCache?: boolean }} [options]
  */
 export async function loadLiveJobsSafe(options = {}) {
   try {
