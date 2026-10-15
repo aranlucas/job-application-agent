@@ -43,6 +43,14 @@ const FAILURE_POINTS = new Set(['role-scope', 'company-problem', 'constraints', 
 const APPROVALS = new Set(['APPROVE SUBMIT', 'STANDING AUTHORIZATION']);
 const MODES = new Set(['review-each', 'routine-auto']);
 const TELEMETRY_DURATIONS = new Set(['under-1s', '1-5s', '5-30s', '30-60s', '1-2m', '2-5m', '5-15m', '15m-plus', 'unknown']);
+const SUBMISSION_TELEMETRY_ALLOWED = new Set([
+  'durationBucket', 'durationMs', 'startedAt', 'endedAt', 'fieldsFilled', 'shortAnswerCount', 'resumeUploaded', 'otpVerified',
+]);
+const SUBMISSION_TELEMETRY_PII_KEYS = new Set([
+  'identity', 'candidateName', 'candidateEmail', 'candidatePhone', 'name', 'email', 'phone',
+  'resumePath', 'resume', 'answers', 'answerText', 'fullName', 'firstName', 'lastName',
+]);
+const FILL_METRICS_SOURCES = new Set(['telemetry', 'answer_keys', 'empty']);
 const AUTONOMY_SCOPES = Object.freeze(['discover', 'assess', 'fill', 'upload-resume', 'submit', 'send-recruiting-email', 'record-ledger', 'record-outcomes', 'cleanup-tabs', 'open-improvement-pr']);
 const AUTONOMY_HARD_STOPS = Object.freeze(['authentication', 'mfa', 'captcha', 'legal-attestation', 'demographic', 'government-id', 'unverifiable-claim', 'ambiguous-authorization', 'ambiguous-compensation']);
 const ATTENTION_STAGES = new Set(['discovery', 'assessment', 'application', 'contact', 'resume', 'questions', 'legal', 'demographic', 'review', 'submission', 'confirmation', 'outcome', 'answers', 'upload']);
@@ -280,15 +288,15 @@ export function resolveSubmissionFillMetrics(entry, details = {}) {
     : hasExplicitFields
       ? Math.max(0, fieldsFilled - (resumeUploaded ? 1 : 0))
       : answers.filter((key) => !RESUME_ANSWER_KEY.test(key)).length;
-  const metricsSource = (hasExplicitFields || hasExplicitResume)
+  const fillMetricsSource = (hasExplicitFields || hasExplicitResume)
     ? 'telemetry'
-    : (answers.length > 0 ? 'answers' : 'empty');
+    : (answers.length > 0 ? 'answer_keys' : 'empty');
   return {
     ...(details.durationBucket ? { durationBucket: details.durationBucket } : {}),
     fieldsFilled,
     shortAnswerCount,
     resumeUploaded: Boolean(resumeUploaded),
-    metricsSource,
+    fillMetricsSource,
   };
 }
 
@@ -299,7 +307,7 @@ export function resolveSubmissionFillMetrics(entry, details = {}) {
  */
 export function assertSubmissionFillGuard(entry, metrics, thinOverride = null) {
   if (isFixtureOrSandboxApply(entry)) return;
-  if (metrics.metricsSource === 'empty') {
+  if (metrics.fillMetricsSource === 'empty') {
     throw new Error(
       'entry.telemetry.fieldsFilled and entry.telemetry.resumeUploaded are required when answers are empty. '
       + 'Pass integer field counts and a Boolean resumeUploaded only — never field values, paths, or answer text in telemetry.',
@@ -315,6 +323,16 @@ export function assertSubmissionFillGuard(entry, metrics, thinOverride = null) {
   }
 }
 
+export function warnAnswerKeyFillMetricsFallback(fillMetricsSource) {
+  if (fillMetricsSource !== 'answer_keys') return;
+  process.stderr.write(
+    'WARNING: ledger add used answer-key fallback fill metrics '
+    + '(fillMetricsSource=answer_keys, telemetrySupplied=false). '
+    + 'Resend entry.telemetry with fieldsFilled, resumeUploaded, and startedAt/endedAt or durationMs '
+    + 'so analytics duration and counts are accurate — do not omit the telemetry block.\n',
+  );
+}
+
 /**
  * Build application_submitted analytics. Missing telemetry must not look like an empty form:
  * send null fill counts + durationBucket "unknown" with telemetrySupplied:false.
@@ -322,8 +340,9 @@ export function assertSubmissionFillGuard(entry, metrics, thinOverride = null) {
 export async function telemetryApplicationSubmitted(entry, details = {}) {
   const identity = await jobIdentity(entry.url);
   const metrics = resolveSubmissionFillMetrics(entry, details);
+  const fillMetricsSource = details.fillMetricsSource ?? metrics.fillMetricsSource;
   const telemetrySupplied = details.telemetrySupplied === true;
-  const omitCounts = metrics.metricsSource === 'empty';
+  const omitCounts = fillMetricsSource === 'empty';
 
   let resolvedDuration = metrics.durationBucket ?? details.durationBucket ?? null;
   if (resolvedDuration == null) {
@@ -349,6 +368,7 @@ export async function telemetryApplicationSubmitted(entry, details = {}) {
       resumeUploaded: omitCounts ? null : Boolean(metrics.resumeUploaded),
       approvalMode: entry.approval === 'STANDING AUTHORIZATION' ? 'routine-auto' : 'review-each',
       telemetrySupplied,
+      fillMetricsSource,
     },
   };
 }
@@ -727,6 +747,14 @@ export function validateLedgerEntry(input) {
   const applyKind = resolveApplyKind(normalized.url, { applyKind: entry.applyKind });
   if (!APPLY_KINDS.has(applyKind)) throw new Error('entry.applyKind is invalid.');
   normalized.applyKind = applyKind;
+  if (entry.fillMetricsSource != null) {
+    if (!FILL_METRICS_SOURCES.has(entry.fillMetricsSource)) throw new Error('entry.fillMetricsSource is invalid.');
+    normalized.fillMetricsSource = entry.fillMetricsSource;
+  }
+  if (entry.telemetrySupplied != null) {
+    if (typeof entry.telemetrySupplied !== 'boolean') throw new Error('entry.telemetrySupplied must be a Boolean.');
+    normalized.telemetrySupplied = entry.telemetrySupplied;
+  }
   if (!SOURCES.has(normalized.source)) throw new Error('entry.source is invalid.');
   if (normalized.discoverySource != null && !DISCOVERY_SOURCES.has(normalized.discoverySource)) throw new Error('entry.discoverySource is invalid.');
   if (normalized.applicationChannel != null && !SOURCES.has(normalized.applicationChannel)) throw new Error('entry.applicationChannel is invalid.');
@@ -765,20 +793,32 @@ export function validateLedgerCheckCandidate(input) {
 export function validateSubmissionTelemetry(input) {
   if (input == null) return {};
   const value = object(input, 'entry.telemetry');
-  const allowed = new Set(['durationBucket', 'durationMs', 'startedAt', 'endedAt', 'fieldsFilled', 'shortAnswerCount', 'resumeUploaded']);
-  for (const key of Object.keys(value)) if (!allowed.has(key)) throw new Error(`Unknown entry.telemetry property: ${key}.`);
-  if (value.durationBucket != null && !TELEMETRY_DURATIONS.has(value.durationBucket)) throw new Error('entry.telemetry.durationBucket is invalid.');
-  if (value.durationMs != null && (!Number.isInteger(value.durationMs) || value.durationMs < 0 || value.durationMs > 86_400_000)) {
+  const dropped = [];
+  for (const key of Object.keys(value)) {
+    if (SUBMISSION_TELEMETRY_PII_KEYS.has(key)) {
+      throw new Error(`entry.telemetry must not include PII property: ${key}.`);
+    }
+    if (!SUBMISSION_TELEMETRY_ALLOWED.has(key)) dropped.push(key);
+  }
+  if (dropped.length) {
+    process.stderr.write(
+      `Warning: dropped unknown entry.telemetry properties: ${dropped.join(', ')}. Valid metrics were kept.\n`,
+    );
+  }
+  const cleaned = Object.fromEntries(Object.entries(value).filter(([key]) => SUBMISSION_TELEMETRY_ALLOWED.has(key)));
+  if (cleaned.durationBucket != null && !TELEMETRY_DURATIONS.has(cleaned.durationBucket)) throw new Error('entry.telemetry.durationBucket is invalid.');
+  if (cleaned.durationMs != null && (!Number.isInteger(cleaned.durationMs) || cleaned.durationMs < 0 || cleaned.durationMs > 86_400_000)) {
     throw new Error('entry.telemetry.durationMs must be an integer from 0 to 86400000.');
   }
   for (const key of ['startedAt', 'endedAt']) {
-    if (value[key] != null && Number.isNaN(Date.parse(value[key]))) throw new Error(`entry.telemetry.${key} must be an ISO date.`);
+    if (cleaned[key] != null && Number.isNaN(Date.parse(cleaned[key]))) throw new Error(`entry.telemetry.${key} must be an ISO date.`);
   }
   for (const [key, max] of [['fieldsFilled', 500], ['shortAnswerCount', 100]]) {
-    if (value[key] != null && (!Number.isInteger(value[key]) || value[key] < 0 || value[key] > max)) throw new Error(`entry.telemetry.${key} must be an integer from 0 to ${max}.`);
+    if (cleaned[key] != null && (!Number.isInteger(cleaned[key]) || cleaned[key] < 0 || cleaned[key] > max)) throw new Error(`entry.telemetry.${key} must be an integer from 0 to ${max}.`);
   }
-  if (value.resumeUploaded != null && typeof value.resumeUploaded !== 'boolean') throw new Error('entry.telemetry.resumeUploaded must be a Boolean.');
-  const details = Object.fromEntries(Object.entries(value).filter(([, item]) => item != null));
+  if (cleaned.resumeUploaded != null && typeof cleaned.resumeUploaded !== 'boolean') throw new Error('entry.telemetry.resumeUploaded must be a Boolean.');
+  if (cleaned.otpVerified != null && typeof cleaned.otpVerified !== 'boolean') throw new Error('entry.telemetry.otpVerified must be a Boolean.');
+  const details = Object.fromEntries(Object.entries(cleaned).filter(([, item]) => item != null));
   if (details.durationBucket == null) {
     let milliseconds = details.durationMs;
     if (milliseconds == null && details.startedAt && details.endedAt) {
@@ -2186,11 +2226,17 @@ async function executeCommand([area, action, value], telemetry, session, communi
   else if (area === 'ledger' && action === 'deliveries') result = await deliveryHistory(value);
   else if (area === 'ledger' && action === 'add' && value === '--stdin') {
     const input = await jsonStdin();
-    const telemetrySupplied = input.telemetry != null;
     const telemetryDetails = validateSubmissionTelemetry(input.telemetry);
-    const entry = validateLedgerEntry(input);
-    const fillMetrics = resolveSubmissionFillMetrics(entry, telemetryDetails);
-    assertSubmissionFillGuard(entry, fillMetrics, input.thinSubmissionOverride);
+    const baseEntry = validateLedgerEntry(input);
+    const fillMetrics = resolveSubmissionFillMetrics(baseEntry, telemetryDetails);
+    assertSubmissionFillGuard(baseEntry, fillMetrics, input.thinSubmissionOverride);
+    const telemetrySupplied = fillMetrics.fillMetricsSource === 'telemetry';
+    warnAnswerKeyFillMetricsFallback(fillMetrics.fillMetricsSource);
+    const entry = validateLedgerEntry({
+      ...input,
+      fillMetricsSource: fillMetrics.fillMetricsSource,
+      telemetrySupplied,
+    });
     result = await ledgerAdd(entry, input.duplicateOverride, input.companyReapplyOverride, input.cloudIntentId && input.cloudLeaseId ? { intentId: input.cloudIntentId, leaseId: input.cloudLeaseId } : null);
     result.communityJob = await communityJobsSync(community, { limit: 1, applicationIds: [entry.id] });
     if (!isFixtureOrSandboxApply(entry)) {
