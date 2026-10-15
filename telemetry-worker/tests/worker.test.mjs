@@ -377,6 +377,7 @@ test('/v1/jobs/live returns liveness fields and uses a distinct rate-limit scope
     'url',
   ]);
   assert.match(bindings.sourceReadRateLimitKeys[0], /^jobs-live:[0-9a-f]{64}$/);
+  assert.match(response.headers.get('cache-control'), /s-maxage=300/);
 });
 
 test('/v1/jobs/live?status=open returns only open jobs and rejects bad status', async () => {

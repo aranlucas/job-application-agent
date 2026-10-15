@@ -5,6 +5,13 @@ const CACHE_CONTROL = "public, max-age=60, s-maxage=300, stale-while-revalidate=
 const MAX_UPSTREAM_BYTES = 256 * 1024;
 
 export async function GET(request: Request) {
+  const cache = typeof caches !== "undefined" ? caches.default : undefined;
+  const cacheKey = new Request(request.url, { method: "GET" });
+  if (cache) {
+    const cached = await cache.match(cacheKey);
+    if (cached) return cached;
+  }
+
   const configured = env.COMMUNITY_JOBS_LIVE_UPSTREAM
     ?? (env.COMMUNITY_JOBS_UPSTREAM ? (() => {
       try {
@@ -33,7 +40,9 @@ export async function GET(request: Request) {
     if (new TextEncoder().encode(raw).byteLength > MAX_UPSTREAM_BYTES) throw new Error("upstream response too large");
     const result = validateLiveJobs(JSON.parse(raw));
     if (!result.ok) throw new Error("invalid upstream response");
-    return Response.json(result.data, { headers: { "cache-control": CACHE_CONTROL, "x-content-type-options": "nosniff" } });
+    const next = Response.json(result.data, { headers: { "cache-control": CACHE_CONTROL, "x-content-type-options": "nosniff" } });
+    if (cache) await cache.put(cacheKey, next.clone());
+    return next;
   } catch {
     return Response.json({ error: "jobs_unavailable" }, { status: 503, headers: { "cache-control": "no-store", "retry-after": "60" } });
   }
