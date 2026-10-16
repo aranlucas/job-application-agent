@@ -30,6 +30,8 @@ import { confirmOutreachTowardRound, loadOutreachRoundView, loadSentVerifiedOutr
 import { isFixtureOrSandboxApply, resolveApplyKind } from './ats/apply-url-gate.mjs';
 
 const SOURCES = new Set(['linkedin', 'greenhouse', 'lever', 'ashby', 'workable', 'comeet', 'workday', 'rippling', 'smartrecruiters', 'google-form', 'company', 'email', 'other']);
+/** Ledger applicationChannel values: ATS sources plus honest one-click profile applies (not a community job-board channel). */
+const APPLICATION_CHANNELS = new Set([...SOURCES, 'profile_one_click']);
 const APPLY_KINDS = new Set(['fixture', 'vendor-sandbox', 'live']);
 const DISCOVERY_SOURCES = new Set(['direct-company', 'linkedin', 'x', 'yc', 'hacker-news', 'job-board', 'email', 'user-supplied', 'web-search', 'other']);
 const ELIGIBILITY = new Set(['eligible', 'unclear', 'ineligible']);
@@ -45,7 +47,11 @@ const MODES = new Set(['review-each', 'routine-auto']);
 const TELEMETRY_DURATIONS = new Set(['under-1s', '1-5s', '5-30s', '30-60s', '1-2m', '2-5m', '5-15m', '15m-plus', 'unknown']);
 const SUBMISSION_TELEMETRY_ALLOWED = new Set([
   'durationBucket', 'durationMs', 'startedAt', 'endedAt', 'fieldsFilled', 'shortAnswerCount', 'resumeUploaded', 'otpVerified',
+  'profileResumeOnFile',
 ]);
+const THIN_OVERRIDE_CONFIRMATION_MIN = 16;
+const THIN_OVERRIDE_CONFIRMATION_MAX = 400;
+const THIN_OVERRIDE_USES_STREAM = 'thin-submission-override-uses';
 const SUBMISSION_TELEMETRY_PII_KEYS = new Set([
   'identity', 'candidateName', 'candidateEmail', 'candidatePhone', 'name', 'email', 'phone',
   'resumePath', 'resume', 'answers', 'answerText', 'fullName', 'firstName', 'lastName',
@@ -209,7 +215,15 @@ export function skillErrorProperties(error, command) {
 }
 
 function sourceToAts(source) {
-  return SOURCES.has(source) ? source : 'other';
+  const normalized = String(source ?? '').toLowerCase();
+  if (normalized === 'profile_one_click') return 'other';
+  return SOURCES.has(normalized) ? normalized : 'other';
+}
+
+function shareableApplicationChannel(channel) {
+  const normalized = String(channel ?? '').toLowerCase();
+  if (normalized === 'profile_one_click') return 'other';
+  return normalized;
 }
 
 function assessmentTags(result) {
@@ -254,6 +268,7 @@ export async function telemetryJobAssessed(job, result) {
 
 const RESUME_ANSWER_KEY = /resume|attachment|cv|curriculum/i;
 export const THIN_SUBMISSION_OVERRIDE = 'THIN SUBMISSION ACKNOWLEDGED';
+export const PROFILE_ONE_CLICK_CHANNEL = 'profile_one_click';
 
 const ATTENTION_BLOCKER_ALIASES = Object.freeze({
   login: 'authentication',
@@ -270,6 +285,92 @@ const ATTENTION_ACTION_ALIASES = Object.freeze({
   'upload-resume': 'enable-upload',
   'resume-upload': 'enable-upload',
 });
+
+function submissionApprovalMode(entry) {
+  if (entry?.approval === 'STANDING AUTHORIZATION') return 'routine-auto';
+  if (entry?.approval === 'APPROVE SUBMIT') return 'review-each';
+  return null;
+}
+
+function isUnattendedOrRoutineAuto(entry, options = {}) {
+  if (options.unattended === true) return true;
+  if (options.approvalMode === 'routine-auto' || options.submissionMode === 'routine-auto') return true;
+  return submissionApprovalMode(entry) === 'routine-auto';
+}
+
+function applicationChannelOf(entry) {
+  return String(entry?.applicationChannel ?? entry?.source ?? '').toLowerCase();
+}
+
+/**
+ * Normalize thinSubmissionOverride. Requires an object with the ack phrase and a
+ * short per-job candidate confirmation note from the conversation — never a bare string.
+ */
+export function normalizeThinSubmissionOverride(raw) {
+  if (raw == null) return null;
+  if (typeof raw === 'string') {
+    throw new Error(
+      'thinSubmissionOverride must be an object with acknowledgment and candidateConfirmation. '
+      + 'A bare ack string is rejected so agents cannot auto-ack empty applies. '
+      + 'Use only after an explicit, per-job candidate confirmation in the conversation — never in routine-auto or unattended runs.',
+    );
+  }
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('thinSubmissionOverride must be an object with acknowledgment and candidateConfirmation.');
+  }
+  const acknowledgment = raw.acknowledgment ?? raw.ack ?? raw.phrase;
+  const candidateConfirmation = raw.candidateConfirmation ?? raw.confirmationNote ?? raw.note;
+  if (acknowledgment !== THIN_SUBMISSION_OVERRIDE) {
+    throw new Error(`thinSubmissionOverride.acknowledgment must be exactly "${THIN_SUBMISSION_OVERRIDE}".`);
+  }
+  if (typeof candidateConfirmation !== 'string') {
+    throw new Error('thinSubmissionOverride.candidateConfirmation must be a short per-job candidate confirmation note.');
+  }
+  const note = candidateConfirmation.trim();
+  if (note.length < THIN_OVERRIDE_CONFIRMATION_MIN || note.length > THIN_OVERRIDE_CONFIRMATION_MAX) {
+    throw new Error(
+      `thinSubmissionOverride.candidateConfirmation must be ${THIN_OVERRIDE_CONFIRMATION_MIN}–${THIN_OVERRIDE_CONFIRMATION_MAX} characters after trim.`,
+    );
+  }
+  if (note === THIN_SUBMISSION_OVERRIDE) {
+    throw new Error('thinSubmissionOverride.candidateConfirmation must describe the candidate confirmation, not repeat the ack phrase.');
+  }
+  return { acknowledgment: THIN_SUBMISSION_OVERRIDE, candidateConfirmation: note };
+}
+
+function thinOverrideConfirmationDigest(note) {
+  return createHash('sha256').update(String(note)).digest('hex');
+}
+
+/**
+ * Reject reuse of the same confirmation note across different jobs in a batch.
+ * Same job URL may retry; different URLs with the same note are blocked.
+ */
+export async function assertAndRecordThinOverrideUse(candidateConfirmation, jobUrl) {
+  const note = String(candidateConfirmation ?? '').trim();
+  const digest = thinOverrideConfirmationDigest(note);
+  const url = normalizeUrl(jobUrl);
+  return withStateLock(THIN_OVERRIDE_USES_STREAM, async (dir) => {
+    const file = join(dir, `${THIN_OVERRIDE_USES_STREAM}.ndjson`);
+    const prior = await jsonLines(file);
+    for (const row of prior) {
+      if (row?.confirmationDigest === digest && row?.url && row.url !== url) {
+        throw new Error(
+          'thinSubmissionOverride.candidateConfirmation was already used for a different job in this batch. '
+          + 'Each empty-apply override needs its own explicit, per-job candidate confirmation — do not reuse one note across jobs.',
+        );
+      }
+    }
+    const event = {
+      confirmationDigest: digest,
+      url,
+      usedAt: new Date().toISOString(),
+    };
+    await appendFile(file, `${JSON.stringify(event)}\n`, { mode: 0o600 });
+    await chmod(file, 0o600);
+    return event;
+  });
+}
 
 /**
  * Resolve fill metrics for application_submitted without putting answer values in telemetry.
@@ -288,7 +389,7 @@ export function resolveSubmissionFillMetrics(entry, details = {}) {
     : hasExplicitFields
       ? Math.max(0, fieldsFilled - (resumeUploaded ? 1 : 0))
       : answers.filter((key) => !RESUME_ANSWER_KEY.test(key)).length;
-  const fillMetricsSource = (hasExplicitFields || hasExplicitResume)
+  const fillMetricsSource = (hasExplicitFields || hasExplicitResume || details.profileResumeOnFile === true)
     ? 'telemetry'
     : (answers.length > 0 ? 'answer_keys' : 'empty');
   return {
@@ -297,30 +398,79 @@ export function resolveSubmissionFillMetrics(entry, details = {}) {
     shortAnswerCount,
     resumeUploaded: Boolean(resumeUploaded),
     fillMetricsSource,
+    ...(details.profileResumeOnFile === true ? { profileResumeOnFile: true } : {}),
   };
 }
 
 /**
  * Block ledger add when fill metrics are missing or the submission looks empty.
- * Fixture / vendor-sandbox applies are exempt. Intentional empty ATS accepts need
- * thinSubmissionOverride: "THIN SUBMISSION ACKNOWLEDGED".
+ * Fixture / vendor-sandbox applies are exempt.
+ * Honest one-click path: applicationChannel profile_one_click + telemetry.profileResumeOnFile.
+ * Intentional empty ATS accepts need thinSubmissionOverride with a per-job candidate confirmation
+ * and APPROVE SUBMIT — never routine-auto / unattended / STANDING AUTHORIZATION.
  */
-export function assertSubmissionFillGuard(entry, metrics, thinOverride = null) {
-  if (isFixtureOrSandboxApply(entry)) return;
+export function assertSubmissionFillGuard(entry, metrics, thinOverride = null, options = {}) {
+  if (isFixtureOrSandboxApply(entry)) {
+    return { path: 'fixture', thinSubmissionOverrideUsed: false };
+  }
   if (metrics.fillMetricsSource === 'empty') {
     throw new Error(
       'entry.telemetry.fieldsFilled and entry.telemetry.resumeUploaded are required when answers are empty. '
       + 'Pass integer field counts and a Boolean resumeUploaded only — never field values, paths, or answer text in telemetry.',
     );
   }
-  if (metrics.fieldsFilled === 0 && metrics.resumeUploaded !== true) {
-    if (thinOverride !== THIN_SUBMISSION_OVERRIDE) {
+  if (!(metrics.fieldsFilled === 0 && metrics.resumeUploaded !== true)) {
+    return { path: 'filled', thinSubmissionOverrideUsed: false };
+  }
+
+  const channel = applicationChannelOf(entry);
+  if (channel === PROFILE_ONE_CLICK_CHANNEL && metrics.profileResumeOnFile === true) {
+    return { path: 'profile_one_click', thinSubmissionOverrideUsed: false };
+  }
+
+  let normalized;
+  try {
+    normalized = normalizeThinSubmissionOverride(thinOverride);
+  } catch (error) {
+    if (thinOverride == null) {
       throw new Error(
-        `Submission looks empty (0 fields filled, no résumé). Fill the form and upload the canonical résumé before ledger add, `
-        + `or pass thinSubmissionOverride: "${THIN_SUBMISSION_OVERRIDE}" only when the ATS truly accepted an empty apply.`,
+        'Submission looks empty (0 fields filled, no résumé). Fill the form and upload the canonical résumé before ledger add. '
+        + `For one-click applies that use a stored site profile/résumé, set applicationChannel to "${PROFILE_ONE_CLICK_CHANNEL}" `
+        + 'with telemetry.profileResumeOnFile: true. '
+        + `A thinSubmissionOverride is only for an explicit, per-job candidate confirmation in the conversation `
+        + `(object with acknowledgment "${THIN_SUBMISSION_OVERRIDE}" and candidateConfirmation) — never in routine-auto or unattended runs.`,
       );
     }
+    throw error;
   }
+  if (normalized == null) {
+    throw new Error(
+      'Submission looks empty (0 fields filled, no résumé). Fill the form and upload the canonical résumé before ledger add. '
+      + `For one-click applies that use a stored site profile/résumé, set applicationChannel to "${PROFILE_ONE_CLICK_CHANNEL}" `
+      + 'with telemetry.profileResumeOnFile: true. '
+      + `A thinSubmissionOverride is only for an explicit, per-job candidate confirmation in the conversation `
+      + `(object with acknowledgment "${THIN_SUBMISSION_OVERRIDE}" and candidateConfirmation) — never in routine-auto or unattended runs.`,
+    );
+  }
+
+  if (isUnattendedOrRoutineAuto(entry, options)) {
+    throw new Error(
+      'thinSubmissionOverride is not allowed in routine-auto or unattended runs '
+      + '(including approval STANDING AUTHORIZATION). Pause for an explicit, per-job candidate confirmation in the conversation, '
+      + `or use applicationChannel "${PROFILE_ONE_CLICK_CHANNEL}" with telemetry.profileResumeOnFile: true when the site applied from a stored profile.`,
+    );
+  }
+  if (entry.approval !== 'APPROVE SUBMIT') {
+    throw new Error(
+      'thinSubmissionOverride requires approval "APPROVE SUBMIT" after an explicit, per-job candidate confirmation in the conversation.',
+    );
+  }
+
+  return {
+    path: 'thin_override',
+    thinSubmissionOverrideUsed: true,
+    candidateConfirmation: normalized.candidateConfirmation,
+  };
 }
 
 export function warnAnswerKeyFillMetricsFallback(fillMetricsSource) {
@@ -369,6 +519,7 @@ export async function telemetryApplicationSubmitted(entry, details = {}) {
       approvalMode: entry.approval === 'STANDING AUTHORIZATION' ? 'routine-auto' : 'review-each',
       telemetrySupplied,
       fillMetricsSource,
+      thinSubmissionOverrideUsed: details.thinSubmissionOverrideUsed === true,
     },
   };
 }
@@ -588,7 +739,7 @@ export function scoreJob(input, target) {
   const workMode = string(job.workMode ?? (job.remote === true ? 'remote' : 'unspecified'), 'job.workMode', 40).toLowerCase();
   if (!SOURCES.has(source)) throw new Error('job.source is invalid.');
   if (discoverySource != null && !DISCOVERY_SOURCES.has(discoverySource)) throw new Error('job.discoverySource is invalid.');
-  if (applicationChannel != null && !SOURCES.has(applicationChannel)) throw new Error('job.applicationChannel is invalid.');
+  if (applicationChannel != null && !APPLICATION_CHANNELS.has(applicationChannel)) throw new Error('job.applicationChannel is invalid.');
   if (!ELIGIBILITY.has(eligibility)) throw new Error('job.eligibility must be eligible, unclear, or ineligible.');
   if (!POSTING_STATUS.has(postingStatus)) throw new Error('job.postingStatus must be active, closed, or unclear.');
   if (!JOB_SENIORITIES.has(seniority)) throw new Error('job.seniority is invalid.');
@@ -757,7 +908,9 @@ export function validateLedgerEntry(input) {
   }
   if (!SOURCES.has(normalized.source)) throw new Error('entry.source is invalid.');
   if (normalized.discoverySource != null && !DISCOVERY_SOURCES.has(normalized.discoverySource)) throw new Error('entry.discoverySource is invalid.');
-  if (normalized.applicationChannel != null && !SOURCES.has(normalized.applicationChannel)) throw new Error('entry.applicationChannel is invalid.');
+  if (normalized.applicationChannel != null && !APPLICATION_CHANNELS.has(normalized.applicationChannel)) {
+    throw new Error('entry.applicationChannel is invalid.');
+  }
   if (!Number.isInteger(normalized.score) || normalized.score < 0 || normalized.score > 100) throw new Error('entry.score must be an integer from 0 to 100.');
   if (normalized.status !== 'submitted') throw new Error('New ledger entries must have status submitted.');
   if (!APPROVALS.has(normalized.approval)) throw new Error('entry.approval is invalid.');
@@ -818,6 +971,9 @@ export function validateSubmissionTelemetry(input) {
   }
   if (cleaned.resumeUploaded != null && typeof cleaned.resumeUploaded !== 'boolean') throw new Error('entry.telemetry.resumeUploaded must be a Boolean.');
   if (cleaned.otpVerified != null && typeof cleaned.otpVerified !== 'boolean') throw new Error('entry.telemetry.otpVerified must be a Boolean.');
+  if (cleaned.profileResumeOnFile != null && typeof cleaned.profileResumeOnFile !== 'boolean') {
+    throw new Error('entry.telemetry.profileResumeOnFile must be a Boolean.');
+  }
   const details = Object.fromEntries(Object.entries(cleaned).filter(([, item]) => item != null));
   if (details.durationBucket == null) {
     let milliseconds = details.durationMs;
@@ -1122,7 +1278,7 @@ function shareableLedgerJob(entry) {
     url: entry.url,
     company: entry.company,
     role: entry.role,
-    applicationChannel: entry.applicationChannel ?? entry.source,
+    applicationChannel: shareableApplicationChannel(entry.applicationChannel ?? entry.source),
     ...(entry.discoverySource == null ? {} : { discoverySource: entry.discoverySource }),
   });
 }
@@ -2229,7 +2385,10 @@ async function executeCommand([area, action, value], telemetry, session, communi
     const telemetryDetails = validateSubmissionTelemetry(input.telemetry);
     const baseEntry = validateLedgerEntry(input);
     const fillMetrics = resolveSubmissionFillMetrics(baseEntry, telemetryDetails);
-    assertSubmissionFillGuard(baseEntry, fillMetrics, input.thinSubmissionOverride);
+    const fillGuard = assertSubmissionFillGuard(baseEntry, fillMetrics, input.thinSubmissionOverride);
+    if (fillGuard.thinSubmissionOverrideUsed) {
+      await assertAndRecordThinOverrideUse(fillGuard.candidateConfirmation, baseEntry.url);
+    }
     const telemetrySupplied = fillMetrics.fillMetricsSource === 'telemetry';
     warnAnswerKeyFillMetricsFallback(fillMetrics.fillMetricsSource);
     const entry = validateLedgerEntry({
@@ -2245,6 +2404,7 @@ async function executeCommand([area, action, value], telemetry, session, communi
       await emitDomainEvent(telemetry, session, await telemetryApplicationSubmitted(entry, {
         ...fillMetrics,
         telemetrySupplied,
+        thinSubmissionOverrideUsed: fillGuard.thinSubmissionOverrideUsed === true,
         ...(lifecycleStartedAt ? { lifecycleStartedAt } : {}),
       }));
     }

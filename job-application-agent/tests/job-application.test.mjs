@@ -8,11 +8,14 @@ import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:http';
 
 import {
+  assertAndRecordThinOverrideUse,
   assertSubmissionFillGuard,
   buildReview,
   commandCategory,
   durationBucket,
   migrateProfile,
+  normalizeThinSubmissionOverride,
+  PROFILE_ONE_CLICK_CHANNEL,
   profileStatus,
   resolveSubmissionFillMetrics,
   scoreJob,
@@ -29,6 +32,11 @@ import {
   validateProfile,
   validateSubmissionTelemetry,
 } from '../scripts/job-application.mjs';
+
+const thinOverride = (note = 'Candidate confirmed in chat that this empty ATS accept is intentional') => ({
+  acknowledgment: THIN_SUBMISSION_OVERRIDE,
+  candidateConfirmation: note,
+});
 
 const target = {
   name: 'Test Candidate',
@@ -379,18 +387,53 @@ test('resolves fill metrics from telemetry counts or answer keys without storing
   });
 });
 
-test('guards empty ledger submissions unless thin override or fixture apply', () => {
-  const live = { applyKind: 'live', answers: {} };
+test('guards empty ledger submissions unless thin override, profile one-click, or fixture apply', () => {
+  const live = { applyKind: 'live', answers: {}, approval: 'APPROVE SUBMIT' };
   assert.throws(() => assertSubmissionFillGuard(live, resolveSubmissionFillMetrics(live, {})), /fieldsFilled/);
   assert.throws(
     () => assertSubmissionFillGuard(live, resolveSubmissionFillMetrics(live, { fieldsFilled: 0, resumeUploaded: false })),
     /looks empty/i,
   );
-  assert.doesNotThrow(() => assertSubmissionFillGuard(
+  assert.throws(
+    () => assertSubmissionFillGuard(
+      live,
+      resolveSubmissionFillMetrics(live, { fieldsFilled: 0, resumeUploaded: false }),
+      THIN_SUBMISSION_OVERRIDE,
+    ),
+    /must be an object/i,
+  );
+  assert.throws(
+    () => assertSubmissionFillGuard(
+      { ...live, approval: 'STANDING AUTHORIZATION' },
+      resolveSubmissionFillMetrics(live, { fieldsFilled: 0, resumeUploaded: false }),
+      thinOverride(),
+    ),
+    /routine-auto|unattended|STANDING AUTHORIZATION/i,
+  );
+  assert.throws(
+    () => assertSubmissionFillGuard(
+      live,
+      resolveSubmissionFillMetrics(live, { fieldsFilled: 0, resumeUploaded: false }),
+      thinOverride(),
+      { approvalMode: 'routine-auto' },
+    ),
+    /routine-auto|unattended/i,
+  );
+  const attended = assertSubmissionFillGuard(
     live,
     resolveSubmissionFillMetrics(live, { fieldsFilled: 0, resumeUploaded: false }),
-    THIN_SUBMISSION_OVERRIDE,
-  ));
+    thinOverride('Candidate confirmed empty apply for role A in conversation'),
+  );
+  assert.equal(attended.thinSubmissionOverrideUsed, true);
+  assert.equal(attended.path, 'thin_override');
+
+  const oneClick = assertSubmissionFillGuard(
+    { ...live, applicationChannel: PROFILE_ONE_CLICK_CHANNEL, approval: 'STANDING AUTHORIZATION' },
+    resolveSubmissionFillMetrics(live, { fieldsFilled: 0, resumeUploaded: false, profileResumeOnFile: true }),
+  );
+  assert.equal(oneClick.path, 'profile_one_click');
+  assert.equal(oneClick.thinSubmissionOverrideUsed, false);
+
   assert.doesNotThrow(() => assertSubmissionFillGuard(
     live,
     resolveSubmissionFillMetrics(live, { fieldsFilled: 9, resumeUploaded: true }),
@@ -399,6 +442,16 @@ test('guards empty ledger submissions unless thin override or fixture apply', ()
     { applyKind: 'fixture', answers: {} },
     resolveSubmissionFillMetrics({ answers: {} }, {}),
   ));
+});
+
+test('normalizes thin override objects and rejects bare strings', () => {
+  assert.throws(() => normalizeThinSubmissionOverride(THIN_SUBMISSION_OVERRIDE), /must be an object/i);
+  assert.throws(() => normalizeThinSubmissionOverride({ acknowledgment: THIN_SUBMISSION_OVERRIDE, candidateConfirmation: 'too short' }), /16/);
+  const note = 'Candidate confirmed this empty ATS accept for Acme Eng in chat';
+  assert.deepEqual(normalizeThinSubmissionOverride(thinOverride(note)), {
+    acknowledgment: THIN_SUBMISSION_OVERRIDE,
+    candidateConfirmation: note,
+  });
 });
 
 test('blocks ledger add for empty fill metrics without thin override', async (t) => {
@@ -419,16 +472,59 @@ test('blocks ledger add for empty fill metrics without thin override', async (t)
   }, env);
   assert.equal(zero.code, 1);
   assert.match(zero.stderr, /looks empty/i);
+  const routineRejected = await runCli(script, ['ledger', 'add', '--stdin'], {
+    ...base,
+    id: 'empty-submit-routine-ack',
+    url: 'https://jobs.example.com/empty-submit-routine-ack',
+    telemetry: { fieldsFilled: 0, resumeUploaded: false, durationBucket: 'under-1s' },
+    thinSubmissionOverride: thinOverride('Candidate confirmed empty apply for routine batch job one'),
+  }, env);
+  assert.equal(routineRejected.code, 1);
+  assert.match(routineRejected.stderr, /routine-auto|STANDING AUTHORIZATION|unattended/i);
+  const bareString = await runCli(script, ['ledger', 'add', '--stdin'], {
+    ...base,
+    id: 'empty-submit-bare',
+    approval: 'APPROVE SUBMIT',
+    url: 'https://jobs.example.com/empty-submit-bare',
+    telemetry: { fieldsFilled: 0, resumeUploaded: false, durationBucket: 'under-1s' },
+    thinSubmissionOverride: THIN_SUBMISSION_OVERRIDE,
+  }, env);
+  assert.equal(bareString.code, 1);
+  assert.match(bareString.stderr, /must be an object/i);
   const allowed = await runCli(script, ['ledger', 'add', '--stdin'], {
     ...base,
     id: 'empty-submit-ack',
     company: 'Empty Ack Co',
     role: 'Empty Apply Engineer',
+    approval: 'APPROVE SUBMIT',
     url: 'https://jobs.example.com/empty-submit-ack',
     telemetry: { fieldsFilled: 0, resumeUploaded: false, durationBucket: 'under-1s' },
-    thinSubmissionOverride: THIN_SUBMISSION_OVERRIDE,
+    thinSubmissionOverride: thinOverride('Candidate confirmed empty apply for Empty Ack Co Engineer in chat'),
   }, env);
   assert.equal(allowed.code, 0, allowed.stderr);
+  const reused = await runCli(script, ['ledger', 'add', '--stdin'], {
+    ...base,
+    id: 'empty-submit-reuse',
+    company: 'Reuse Co',
+    role: 'Reuse Engineer',
+    approval: 'APPROVE SUBMIT',
+    url: 'https://jobs.example.com/empty-submit-reuse',
+    telemetry: { fieldsFilled: 0, resumeUploaded: false, durationBucket: 'under-1s' },
+    thinSubmissionOverride: thinOverride('Candidate confirmed empty apply for Empty Ack Co Engineer in chat'),
+  }, env);
+  assert.equal(reused.code, 1);
+  assert.match(reused.stderr, /already used for a different job/i);
+  const oneClick = await runCli(script, ['ledger', 'add', '--stdin'], {
+    ...base,
+    id: 'hirist-one-click',
+    company: 'Hirist Co',
+    role: 'Backend Engineer',
+    url: 'https://www.hirist.tech/j/example-role-1',
+    source: 'other',
+    applicationChannel: PROFILE_ONE_CLICK_CHANNEL,
+    telemetry: { fieldsFilled: 0, resumeUploaded: false, profileResumeOnFile: true, durationBucket: 'under-1s' },
+  }, env);
+  assert.equal(oneClick.code, 0, oneClick.stderr);
   const filled = await runCli(script, ['ledger', 'add', '--stdin'], {
     ...base,
     id: 'filled-submit-role',
@@ -438,6 +534,45 @@ test('blocks ledger add for empty fill metrics without thin override', async (t)
     telemetry: { fieldsFilled: 11, shortAnswerCount: 2, resumeUploaded: true, durationBucket: '5-15m' },
   }, env);
   assert.equal(filled.code, 0, filled.stderr);
+});
+
+test('records thin override use per confirmation digest and emits override telemetry flag', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'public-job-agent-thin-override-'));
+  const previousStateDir = process.env.JOB_APPLICATION_AGENT_STATE_DIR;
+  process.env.JOB_APPLICATION_AGENT_STATE_DIR = directory;
+  t.after(async () => {
+    if (previousStateDir == null) delete process.env.JOB_APPLICATION_AGENT_STATE_DIR;
+    else process.env.JOB_APPLICATION_AGENT_STATE_DIR = previousStateDir;
+    await rm(directory, { recursive: true, force: true });
+  });
+  const note = 'Candidate confirmed empty apply for Override Co role in conversation';
+  await assertAndRecordThinOverrideUse(note, 'https://jobs.example.com/thin-a');
+  await assert.rejects(
+    () => assertAndRecordThinOverrideUse(note, 'https://jobs.example.com/thin-b'),
+    /already used for a different job/i,
+  );
+  await assertAndRecordThinOverrideUse(note, 'https://jobs.example.com/thin-a?utm=1');
+  const entry = {
+    company: 'Override Co', role: 'Engineer', url: 'https://jobs.example.com/thin-telemetry',
+    source: 'other', approval: 'APPROVE SUBMIT', answers: {},
+  };
+  const used = await telemetryApplicationSubmitted(entry, {
+    telemetrySupplied: true,
+    fillMetricsSource: 'telemetry',
+    fieldsFilled: 0,
+    resumeUploaded: false,
+    durationBucket: 'under-1s',
+    thinSubmissionOverrideUsed: true,
+  });
+  assert.equal(used.properties.thinSubmissionOverrideUsed, true);
+  const unused = await telemetryApplicationSubmitted(entry, {
+    telemetrySupplied: true,
+    fillMetricsSource: 'telemetry',
+    fieldsFilled: 4,
+    resumeUploaded: true,
+    durationBucket: '2-5m',
+  });
+  assert.equal(unused.properties.thinSubmissionOverrideUsed, false);
 });
 
 test('requires review at each ten confirmed submissions', () => {
@@ -828,6 +963,7 @@ test('application_submitted uses null/unknown when telemetry is omitted', async 
   assert.equal(missing.properties.shortAnswerCount, null);
   assert.equal(missing.properties.resumeUploaded, null);
   assert.equal(missing.properties.durationBucket, 'unknown');
+  assert.equal(missing.properties.thinSubmissionOverrideUsed, false);
 
   const fromLifecycle = await telemetryApplicationSubmitted(entry, {
     telemetrySupplied: false,

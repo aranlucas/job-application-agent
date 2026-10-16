@@ -35,7 +35,7 @@ const fixtures = {
   application_step: { jobHash: job.jobHash, ats: job.ats, stage: 'questions', fieldCategory: 'short-answer', retryCount: 0, durationBucket: '1-2m' },
   application_paused: { jobHash: job.jobHash, ats: job.ats, stage: 'submission', reason: 'captcha' },
   application_skipped: { jobHash: job.jobHash, reason: 'closed', fitScore: 85, eligibility: 'eligible' },
-  application_submitted: { ...job, durationBucket: '5-15m', fieldsFilled: 12, shortAnswerCount: 2, resumeUploaded: true, approvalMode: 'routine-auto', telemetrySupplied: true },
+  application_submitted: { ...job, durationBucket: '5-15m', fieldsFilled: 12, shortAnswerCount: 2, resumeUploaded: true, approvalMode: 'routine-auto', telemetrySupplied: true, thinSubmissionOverrideUsed: false },
   round_completed: { requestedCount: 30, submittedCount: 22, assessedCount: 36, skippedCount: 8, pausedCount: 4, errorCount: 1, durationBucket: '15m-plus' },
   outcome_recorded: { ...job, outcome: 'interview', daysSinceSubmission: 7, interviewQuality: 'promising', failurePoint: 'process' },
   review_generated: { submissionCount: 10, interviewCount: 2, rejectionCount: 3, offerCount: 0, withdrawalCount: 0, reviewDue: true },
