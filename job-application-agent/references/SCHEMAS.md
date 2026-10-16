@@ -116,7 +116,7 @@ Add only after visible success confirmation.
   "score": 84,
   "status": "submitted",
   "submittedAt": "2026-01-15T10:00:00.000Z",
-  "approval": "STANDING AUTHORIZATION",
+  "approval": "APPROVE SUBMIT",
   "duplicateOverride": "NEW REQUISITION CONFIRMED",
   "companyReapplyOverride": "CANDIDATE APPROVED EARLY REAPPLICATION",
   "applyKind": "live",
@@ -128,13 +128,21 @@ Add only after visible success confirmation.
     "shortAnswerCount": 2,
     "resumeUploaded": true
   },
-  "thinSubmissionOverride": "THIN SUBMISSION ACKNOWLEDGED",
+  "thinSubmissionOverride": {
+    "acknowledgment": "THIN SUBMISSION ACKNOWLEDGED",
+    "candidateConfirmation": "Candidate confirmed in chat that this empty ATS accept for Acme Staff Eng is intentional"
+  },
   "cloudIntentId": "intent UUID returned before transmission",
   "cloudLeaseId": "active application-run lease UUID"
 }
 ```
 
-The `telemetry` block is required on live `ledger add` when `answers` are empty: include at least `fieldsFilled` and `resumeUploaded`, plus `durationMs` or `startedAt`/`endedAt` (record `startedAt` when the form opens). Optional `otpVerified` (Boolean) is accepted. Prefer those counts so analytics stay accurate without putting résumé paths or answer text in the ledger. Answer *keys* may be field labels with redacted markers such as `filled` / `uploaded`; never store the local résumé path, file bytes, free-form answer content, or PII keys (`identity`, `candidateName`, `email`, `phone`, …) in telemetry. Unknown non-PII telemetry keys are dropped with a warning while valid keys are kept; PII keys remain a hard error. `ledger add` rejects live applies that have neither answers nor fill telemetry, and also rejects `fieldsFilled: 0` with `resumeUploaded: false` unless `thinSubmissionOverride` is exactly `THIN SUBMISSION ACKNOWLEDGED` (only when the ATS truly accepted an empty apply). Fixture / vendor-sandbox applies are exempt. When telemetry is omitted despite answers, fill metrics fall back to answer-key counts with `fillMetricsSource: "answer_keys"` and `telemetrySupplied: false` on both the private ledger row and `application_submitted` (duration stays `unknown`); with neither source, fill fields are `null`, `fillMetricsSource` is `empty`, and `durationBucket` is `unknown`.
+The `telemetry` block is required on live `ledger add` when `answers` are empty: include at least `fieldsFilled` and `resumeUploaded`, plus `durationMs` or `startedAt`/`endedAt` (record `startedAt` when the form opens). Optional `otpVerified` and `profileResumeOnFile` (Booleans) are accepted. Prefer those counts so analytics stay accurate without putting résumé paths or answer text in the ledger. Answer *keys* may be field labels with redacted markers such as `filled` / `uploaded`; never store the local résumé path, file bytes, free-form answer content, or PII keys (`identity`, `candidateName`, `email`, `phone`, …) in telemetry. Unknown non-PII telemetry keys are dropped with a warning while valid keys are kept; PII keys remain a hard error. `ledger add` rejects live applies that have neither answers nor fill telemetry, and also rejects `fieldsFilled: 0` with `resumeUploaded: false` unless one of these honest paths applies:
+
+- **Profile one-click:** `applicationChannel: "profile_one_click"` with `telemetry.profileResumeOnFile: true` when the site applied from a stored profile/résumé (no form fields filled this session). Community sharing maps that channel to `other`.
+- **Thin override (attended only):** `thinSubmissionOverride` as an object with `acknowledgment: "THIN SUBMISSION ACKNOWLEDGED"` and a unique per-job `candidateConfirmation` note (16–400 chars) after an explicit candidate confirmation in the conversation. Requires approval `APPROVE SUBMIT`. Rejected under `STANDING AUTHORIZATION`, `routine-auto`, or unattended runs. The same confirmation note cannot be reused across different job URLs in a batch. A bare ack string is rejected. Analytics emit `thinSubmissionOverrideUsed: true|false` on `application_submitted` (no note text / no PII).
+
+Fixture / vendor-sandbox applies are exempt. When telemetry is omitted despite answers, fill metrics fall back to answer-key counts with `fillMetricsSource: "answer_keys"` and `telemetrySupplied: false` on both the private ledger row and `application_submitted` (duration stays `unknown`); with neither source, fill fields are `null`, `fillMetricsSource` is `empty`, and `durationBucket` is `unknown`.
 
 Use `duplicateOverride` only for a verified distinct requisition after a possible-duplicate warning. Use `companyReapplyOverride` only when the candidate explicitly approves a different-role reapplication during the cooldown or after a recorded outcome. Both override phrases, `thinSubmissionOverride`, and the raw `telemetry` counts/timing are transient. Provenance markers `fillMetricsSource` and `telemetrySupplied` are stored on the private ledger row. An accepted company reapplication override stores only `reapplicationApproval: "candidate-explicit"` in the private ledger. Use approval `APPROVE SUBMIT` for per-application approval or `STANDING AUTHORIZATION` when the current request authorizes routine batch submission.
 

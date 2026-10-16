@@ -17,6 +17,8 @@ Grant input:
 
 An active grant covers discovery, assessment, verified form filling, canonical résumé upload, routine submission, verified recruiting email, ledger/outcome recording, completed-tab cleanup, and opening a sanitized improvement PR. Do not ask for another skill-level upload or submission approval while both the profile and grant use `routine-auto`.
 
+The grant never authorizes `thinSubmissionOverride`. That override is only for an explicit, per-job candidate confirmation in the conversation under `APPROVE SUBMIT` — never in unattended or `routine-auto` batches. For one-click applies that use a stored site profile/résumé, use `applicationChannel: "profile_one_click"` with `telemetry.profileResumeOnFile: true` instead.
+
 Always stop for authentication, MFA, CAPTCHA, legal attestations, demographic responses, government identifiers, unverifiable claims, and ambiguous work authorization or compensation. Obey every browser, host, and tool permission prompt; the grant never bypasses an access control.
 
 CAPTCHA vendor assist (`scripts/captcha-vendor.mjs`) remains **Off by default** (`CAPTCHA_VENDOR=off`). It may run only when the vendor flag, API key, and buyer `captchaAssist` opt-in are all set; otherwise pause with `complete-captcha` / live panel. MFA, SSO, and government ID stay human forever. Optional judgment drafts on the attention page still require candidate Approve before inject — never silent AI paste, and Draft is disabled when a posting discourages AI assistance.

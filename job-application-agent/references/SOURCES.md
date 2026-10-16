@@ -28,7 +28,7 @@ Store three independent attribution fields when available:
 
 - `discoverySource`: coarse compatible channel such as `linkedin`, `x`, `yc`, `job-board`, or `user-supplied`.
 - `discoverySourceId`: stable packaged or community ID such as `yc-work-at-a-startup` or `community-abcdef1234567890`.
-- `applicationChannel`: actual submission channel such as `greenhouse`, `ashby`, `lever`, `company`, or `email`.
+- `applicationChannel`: actual submission channel such as `greenhouse`, `ashby`, `lever`, `company`, `email`, or `profile_one_click` (one-click apply using a stored site profile/résumé; community sharing maps it to `other`).
 
 Per-application `discoverySourceId` remains local. Round coverage analytics may send allowlisted packaged source IDs; all community source IDs are collapsed to `community`. See [RUNS.md](RUNS.md) for the required discovery coverage, blocker reports, and concentration explanations.
 

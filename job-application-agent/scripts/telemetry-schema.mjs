@@ -94,6 +94,7 @@ export const EVENT_SCHEMAS = {
       resumeUploaded: nullableBoolean,
       approvalMode: enumValue(APPROVAL_MODES),
       telemetrySupplied: boolean,
+      thinSubmissionOverrideUsed: boolean,
     },
     optional: {
       fillMetricsSource: enumValue(values('telemetry', 'answer_keys', 'empty')),

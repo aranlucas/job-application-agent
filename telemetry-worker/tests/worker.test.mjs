@@ -752,7 +752,7 @@ test('event endpoint revalidates schema and forwards a personless PostHog event'
     event: 'application_submitted',
     properties: {
       company: 'Example AI', title: 'Staff Engineer', jobHash: 'a'.repeat(64), domain: 'jobs.example.com', ats: 'greenhouse', durationBucket: '5-15m', fieldsFilled: 12,
-      shortAnswerCount: 2, resumeUploaded: true, approvalMode: 'routine-auto', telemetrySupplied: true,
+      shortAnswerCount: 2, resumeUploaded: true, approvalMode: 'routine-auto', telemetrySupplied: true, thinSubmissionOverrideUsed: false,
     },
   };
   const response = await worker.fetch(new Request('https://relay.example.com/v1/events', { method: 'POST', headers: { 'content-type': 'application/json', 'user-agent': 'private-agent' }, body: JSON.stringify(payload) }), bindings);

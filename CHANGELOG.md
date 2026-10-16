@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.7.9
+
+- Harden empty-submit protection: reject `thinSubmissionOverride` under `routine-auto` / unattended / `STANDING AUTHORIZATION`; require an object with `acknowledgment` plus a unique per-job `candidateConfirmation` note (no bare ack string; no reuse across jobs in a batch); require `APPROVE SUBMIT`.
+- Add honest one-click path `applicationChannel: "profile_one_click"` with `telemetry.profileResumeOnFile: true` for stored-profile applies (e.g. hirist.tech); community sharing maps that channel to `other`.
+- Emit `thinSubmissionOverrideUsed` (Boolean, no note text) on every `application_submitted` event for daily quality checks.
+- SKILL / AUTONOMY / SCHEMAS / ANALYTICS: remove wording that invited agents to auto-ack thin submits; state the override is only for an explicit, per-job candidate confirmation in the conversation.
+
 ## 3.7.8
 
 - Soften unknown `entry.telemetry` keys on `ledger add`: strip and warn instead of rejecting the whole block; keep PII keys (`identity`, `candidateName`, `email`, …) as hard errors; accept optional `otpVerified` Boolean.

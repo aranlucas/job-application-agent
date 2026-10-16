@@ -69,6 +69,24 @@ test('documents flexible ledger check lookup as a separate process from outcome'
   assert.match(schemas, /telemetry` block is required on live `ledger add`/);
 });
 
+test('documents thin-submission override as attended-only with profile_one_click path', async () => {
+  const skill = await readFile(new URL('../SKILL.md', import.meta.url), 'utf8');
+  const marketplaceSkill = await readFile(new URL('../../skills/job-application-agent/SKILL.md', import.meta.url), 'utf8');
+  const schemas = await readFile(new URL('../references/SCHEMAS.md', import.meta.url), 'utf8');
+  const autonomy = await readFile(new URL('../references/AUTONOMY.md', import.meta.url), 'utf8');
+  for (const copy of [skill, marketplaceSkill]) {
+    assert.match(copy, /Never pass `thinSubmissionOverride` in `routine-auto`/);
+    assert.match(copy, /explicit, per-job candidate confirmation/);
+    assert.match(copy, /profile_one_click/);
+    assert.match(copy, /profileResumeOnFile/);
+    assert.doesNotMatch(copy, /Empty fill metrics are blocked unless the ATS truly accepted an empty apply/);
+  }
+  assert.match(schemas, /candidateConfirmation/);
+  assert.match(schemas, /thinSubmissionOverrideUsed/);
+  assert.match(schemas, /profile_one_click/);
+  assert.match(autonomy, /never authorizes `thinSubmissionOverride`/i);
+});
+
 test('documents LIVE_APPLY fixture allowlist for prove/smoke applies', async () => {
   const runs = await readFile(new URL('../references/RUNS.md', import.meta.url), 'utf8');
   const fixtures = await readFile(new URL('../fixtures/README.md', import.meta.url), 'utf8');
