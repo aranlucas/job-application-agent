@@ -1,6 +1,6 @@
 // Batch review: the only path to a live submission, a replacement transmission, or an
-// outreach handoff. The agent stages what it intends to send, a human approves it by typing
-// the batch's confirmation phrase, and the CLI then
+// outreach handoff. The agent stages what it intends to send, a human approves it on the
+// local review page (or by typing the confirmation phrase in chat), and the CLI then
 // refuses to prepare or record any send that is not covered by an unexpired, unused,
 // unchanged approval.
 //
@@ -15,7 +15,7 @@ import { canonicalUrl, stableJson } from './application-accounting.mjs';
 export const REVIEW_BATCH_MAX_ITEMS = 25;
 export const REVIEW_APPROVAL_TTL_MS = 24 * 60 * 60 * 1000;
 export const REVIEW_PENDING_TTL_MS = 24 * 60 * 60 * 1000;
-export const REVIEW_CHANNELS = Object.freeze(['chat-phrase']);
+export const REVIEW_CHANNELS = Object.freeze(['local-page', 'chat-phrase']);
 const TOKEN_PREFIX = 'rbt1';
 const BATCH_ID = /^rb-\d{8}-[0-9a-f]{8}$/;
 const CODE_LETTERS = 'ACDEFHJKMNPRTVWXY';
@@ -49,17 +49,25 @@ function normalizeAnswers(raw, label) {
 function normalizeItem(raw, index) {
   const label = `items[${index}]`;
   if (raw?.type === 'email') {
-    keysOnly(raw, ['type', 'opportunityId', 'draftRevision', 'company', 'recipient', 'text'], label);
+    keysOnly(raw, ['type', 'opportunityId', 'draftRevision', 'company', 'recipient', 'to', 'subject', 'attachResume', 'text'], label);
     if (!Number.isInteger(raw.draftRevision) || raw.draftRevision < 1) fail(`${label}.draftRevision must be a positive integer.`);
+    if (raw.attachResume != null && typeof raw.attachResume !== 'boolean') fail(`${label}.attachResume must be a Boolean.`);
     const body = text(raw.text, `${label}.text`, 4000);
+    const headers = {
+      to: text(raw.to, `${label}.to (the recipient address or profile from the draft)`, 320),
+      subject: optionalText(raw.subject, `${label}.subject`, 300),
+      attachResume: raw.attachResume === true,
+    };
     return {
       type: 'email',
       opportunityId: text(raw.opportunityId, `${label}.opportunityId`, 180),
       draftRevision: raw.draftRevision,
       company: text(raw.company, `${label}.company`, 300),
       recipient: optionalText(raw.recipient, `${label}.recipient`, 300),
+      ...headers,
       text: body,
-      textSha256: sha256(body),
+      // Headers are part of what the candidate approves, so they are bound with the text.
+      textSha256: sha256(stableJson({ text: body, ...headers })),
     };
   }
   if (raw?.type !== 'application') fail(`${label}.type must be "application" or "email".`);
@@ -69,7 +77,14 @@ function normalizeItem(raw, index) {
   if (!Number.isInteger(raw.fitScore) || raw.fitScore < 0 || raw.fitScore > 100) fail(`${label}.fitScore must be an integer from 0 to 100.`);
   const answers = normalizeAnswers(raw.answers, `${label}.answers`);
   const flagged = raw.flaggedAnswers ?? [];
-  if (!Array.isArray(flagged) || flagged.some((key) => !Object.hasOwn(answers, key))) fail(`${label}.flaggedAnswers must list keys present in answers.`);
+  if (!Array.isArray(flagged)) fail(`${label}.flaggedAnswers must be an array.`);
+  const flags = flagged.map((flag, i) => {
+    if (!flag || typeof flag !== 'object' || Array.isArray(flag)) fail(`${label}.flaggedAnswers[${i}] must be { "answer": "<answer key>", "reason": "<why to check it>" }.`);
+    keysOnly(flag, ['answer', 'reason'], `${label}.flaggedAnswers[${i}]`);
+    if (!Object.hasOwn(answers, flag.answer)) fail(`${label}.flaggedAnswers[${i}].answer must name a key in answers.`);
+    return { answer: flag.answer, reason: text(flag.reason, `${label}.flaggedAnswers[${i}].reason (why the candidate should check it)`, 400) };
+  });
+  if (new Set(flags.map((f) => f.answer)).size !== flags.length) fail(`${label}.flaggedAnswers lists an answer twice.`);
   let url;
   try { url = canonicalUrl(raw.url); } catch { fail(`${label}.url must be a public HTTP(S) URL.`); }
   return {
@@ -83,7 +98,7 @@ function normalizeItem(raw, index) {
     fitScore: raw.fitScore,
     answers,
     answersSha256: answersDigest(answers),
-    flaggedAnswers: [...new Set(flagged)],
+    flaggedAnswers: flags,
   };
 }
 
@@ -205,8 +220,8 @@ function resumeLabel(resume) {
 
 export function renderTable(batch) {
   const rows = batch.items.map((item) => (item.type === 'email'
-    ? `${item.number}. EMAIL  ${item.company}${item.recipient ? ` to ${item.recipient}` : ''} (draft revision ${item.draftRevision}, ${item.text.length} characters)`
-    : `${item.number}. ${item.purpose === 'retry' ? 'RETRY' : 'APPLY'}  ${item.company} | ${item.role} | ${item.url} | fit ${item.fitScore}${item.ats ? ` | ${item.ats}` : ''} | ${Object.keys(item.answers).length} answers${item.flaggedAnswers.length ? ` (flagged: ${item.flaggedAnswers.join(', ')})` : ''}`));
+    ? `${item.number}. EMAIL  ${item.company} to ${item.to}${item.subject ? ` | subject: ${item.subject}` : ''}${item.attachResume ? ' | résumé attached' : ''} (draft revision ${item.draftRevision}, ${item.text.length} characters)`
+    : `${item.number}. ${item.purpose === 'retry' ? 'RETRY' : 'APPLY'}  ${item.company} | ${item.role} | ${item.url} | fit ${item.fitScore}${item.ats ? ` | ${item.ats}` : ''} | ${Object.keys(item.answers).length} answers${item.flaggedAnswers.length ? ` (flagged: ${item.flaggedAnswers.map((f) => `${f.answer}: ${f.reason}`).join('; ')})` : ''}`));
   return [`Review batch ${batch.batchId} (${batch.items.length} item${batch.items.length === 1 ? '' : 's'})`, `Résumé: ${resumeLabel(batch.resume)}`, ...rows].join('\n');
 }
 
@@ -228,7 +243,7 @@ export function batchView(batch, now = new Date(), { includeContent = false, tok
       type: item.type,
       company: item.company,
       ...(item.type === 'email'
-        ? { opportunityId: item.opportunityId, draftRevision: item.draftRevision, ...(item.recipient ? { recipient: item.recipient } : {}), ...(includeContent ? { text: item.text } : {}) }
+        ? { opportunityId: item.opportunityId, draftRevision: item.draftRevision, to: item.to, ...(item.subject ? { subject: item.subject } : {}), attachResume: item.attachResume, ...(item.recipient ? { recipient: item.recipient } : {}), ...(includeContent ? { text: item.text } : {}) }
         : { purpose: item.purpose, applicationId: item.applicationId, role: item.role, url: item.url, ats: item.ats, fitScore: item.fitScore, answerCount: Object.keys(item.answers).length, flaggedAnswers: item.flaggedAnswers, ...(includeContent ? { answers: item.answers } : {}) }),
       ...(batch.approvedAt ? { approved: approved.has(item.itemId) } : {}),
       ...(batch.uses?.[item.itemId] ? { usedAt: batch.uses[item.itemId].usedAt } : {}),
@@ -334,7 +349,7 @@ function sameToken(a, b) {
 export class ReviewGateError extends Error {}
 function gate(message) { throw new ReviewGateError(message); }
 
-const STAGE_HINT = 'Stage it with `review stage --stdin`, have the candidate approve the batch by typing its approval phrase in chat (`review approve --stdin`), then pass `reviewBatchId` and `reviewToken`.';
+const STAGE_HINT = 'Stage it with `review stage --stdin`, have the candidate approve the batch on the review page (`review open <batchId>`) or by typing its approval phrase in chat (`review approve --stdin`), then pass `reviewBatchId` and `reviewToken`.';
 
 /**
  * Find the approved, unused item that covers this send. `match(item)` returns true for the
@@ -409,4 +424,4 @@ export async function resumeDigest(file) {
 }
 
 /** One-line notice for grants written before batch review (they carried `submit`). */
-export const LEGACY_GRANT_NOTICE = 'Notice: your autonomy grant no longer covers submitting or sending on its own. Every send now needs a batch approval from you (an approval phrase you type). Discovery, assessment and form filling still run under the grant.\n';
+export const LEGACY_GRANT_NOTICE = 'Notice: your autonomy grant no longer covers submitting or sending on its own. Every send now needs a batch approval from you (review page or approval phrase). Discovery, assessment and form filling still run under the grant.\n';
