@@ -253,10 +253,65 @@ test("publishes crawler guidance and a host-local apex sitemap", async () => {
   const sitemapXml = await sitemap.text();
   assert.match(sitemapXml, /https:\/\/jobappagent\.com\/privacy/);
   assert.match(sitemapXml, /https:\/\/jobappagent\.com\/jobs</);
+  assert.match(sitemapXml, /https:\/\/jobappagent\.com\/open-source</);
+  assert.match(sitemapXml, /https:\/\/jobappagent\.com\/compare</);
   assert.doesNotMatch(sitemapXml, /stats\.jobappagent\.com/);
   const statsXml = await statsSitemap.text();
   assert.match(statsXml, /https:\/\/stats\.jobappagent\.com\//);
   assert.doesNotMatch(statsXml, /jobappagent\.com\/platforms/);
+});
+
+test("open-source and compare pages pair JobAppAgent with open-source job application agent, without pricing", async () => {
+  const [openSource, compare] = await Promise.all([render("/open-source"), render("/compare")]);
+  assert.equal(openSource.status, 200);
+  assert.equal(compare.status, 200);
+  const openHtml = await openSource.text();
+  const compareHtml = await compare.text();
+  assert.match(openHtml, /<title>JobAppAgent: the open-source job application agent<\/title>/);
+  assert.match(openHtml, /<h1>JobAppAgent, the <span class="[^"]+">open\u2011source<\/span> job application agent<\/h1>/);
+  assert.match(openHtml, /the GitHub repo <code>vaibhavarora14\/job-application-agent<\/code> and the npm package <code>job-application-agent<\/code> are the same project/);
+  assert.match(openHtml, />Confirmed applications</);
+  assert.doesNotMatch(openHtml, /Applications submitted/);
+  assert.match(openHtml, />Copy</);
+  assert.match(openHtml, />View on GitHub</);
+  assert.match(openHtml, /href="\/compare"[^>]*>See how it compares</);
+  assert.match(openHtml, /rel="canonical" href="https:\/\/jobappagent\.com\/open-source"/);
+  assert.match(openHtml, /"@type":"SoftwareApplication","name":"JobAppAgent","alternateName":"job-application-agent"/);
+  assert.match(openHtml, /"codeRepository":"https:\/\/github\.com\/vaibhavarora14\/job-application-agent"/);
+  assert.match(compareHtml, /<title>Open-source job application agents compared \| JobAppAgent<\/title>/);
+  assert.match(compareHtml, /<h1>How JobAppAgent compares to other <span class="[^"]+">open\u2011source<\/span> job agents<\/h1>/);
+  assert.match(compareHtml, /href="\/open-source"[^>]*>About the project</);
+  // Mobile cards: same eight projects as the table, with an approval tag each.
+  assert.equal((compareHtml.match(/<span class="[^"]+">Approval before submit: /g) ?? []).length, 5);
+  // Tools that never make the submit get a neutral "Never submits" tag, never the green yes.
+  // Mobile tags and desktop approval cells agree for tools that never make the submit.
+  assert.equal((compareHtml.match(/<span class="[^"]+">Never submits: you click Submit</g) ?? []).length, 2);
+  assert.equal((compareHtml.match(/<span class="[^"]+">Never submits: you apply yourself</g) ?? []).length, 1);
+  assert.equal((compareHtml.match(/<td>Never submits: you click Submit\. /g) ?? []).length, 2);
+  assert.equal((compareHtml.match(/<td>Never submits: you apply yourself\. /g) ?? []).length, 1);
+  assert.match(compareHtml, /Approval before submit: (?:<!-- -->)?yes</);
+  assert.doesNotMatch(openHtml, /The code is on GitHub as/);
+  assert.match(compareHtml, /Approval before submit: (?:<!-- -->)?no, by default/);
+  assert.match(compareHtml, /Approval before submit: (?:<!-- -->)?not stated/);
+  assert.match(compareHtml, /rel="canonical" href="https:\/\/jobappagent\.com\/compare"/);
+  for (const html of [openHtml, compareHtml]) {
+    assert.doesNotMatch(html, /\$49|Reserve for|Founding reservation|COMING SOON|\bbeta\b|"offers"|"price"/i);
+    assert.doesNotMatch(html, /interview/i);
+  }
+});
+
+test("product footer links the open-source and compare pages; platforms and privacy cross-link them", async () => {
+  const [home, platforms, privacy] = await Promise.all([render("/"), render("/platforms"), render("/privacy")]);
+  const homeHtml = await home.text();
+  const footer = homeHtml.slice(homeHtml.lastIndexOf("<footer"));
+  assert.match(footer, /href="\/open-source"[^>]*>Open source</);
+  assert.match(footer, /href="\/compare"[^>]*>Compare</);
+  const navHtml = homeHtml.slice(homeHtml.indexOf('aria-label="Primary navigation"'), homeHtml.indexOf("</nav>"));
+  assert.doesNotMatch(navHtml, /open-source|\/compare/);
+  for (const html of [await platforms.text(), await privacy.text()]) {
+    assert.match(html, /href="\/open-source"[^>]*>About the project</);
+    assert.match(html, /href="\/compare"[^>]*>See how it compares</);
+  }
 });
 
 test("homepage head includes apex canonical and schema.org JSON-LD without offers", async () => {
